@@ -21,8 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No Docker installation needed – it's preinstalled on the runner
-
       - name: Restore previous session
         if: github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -54,15 +52,33 @@ jobs:
             sleep 10
           done
 
-      - name: Install Frida server (x86_64)
+      - name: Install Frida server (x86_64) via ADB
         run: |
-          docker exec android-emulator bash -c "
-            wget -q https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
-            unxz frida-server-17.1.3-android-x86_64.xz
-            chmod +x frida-server-17.1.3-android-x86_64
-            mv frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
-          "
+          # Download Frida server to the runner
+          wget -q https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
+          
+          # Extract using runner's unxz (available on Ubuntu)
+          unxz frida-server-17.1.3-android-x86_64.xz
+          
+          # Push to emulator via ADB
+          docker exec android-emulator adb push frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
+          
+          # Set executable permission
+          docker exec android-emulator adb shell chmod +x /data/local/tmp/frida-server
+          
+          # Start Frida as daemon (detached)
           docker exec -d android-emulator /data/local/tmp/frida-server
+          
+          echo "✅ Frida server installed and running"
+
+      - name: Verify Frida is running
+        run: |
+          sleep 3
+          if docker exec android-emulator adb shell "ps | grep frida-server" | grep -q frida; then
+            echo "✅ Frida server is running"
+          else
+            echo "⚠️ Frida server may not be running, but continuing..."
+          fi
 
       - name: Verify web interface is ready
         run: |

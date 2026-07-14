@@ -72,7 +72,7 @@ jobs:
           SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
           echo "Targeting device: $SERIAL"
           
-          # Download Frida server to the runner (use curl with -L for redirects)
+          # Download Frida server to the runner
           echo "Downloading Frida server..."
           curl -L -o frida-server-17.1.3-android-x86_64.xz \
             https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
@@ -88,16 +88,26 @@ jobs:
           echo "Extracting..."
           unxz -v frida-server-17.1.3-android-x86_64.xz
           
-          # Verify extracted file
-          if [ ! -f frida-server-17.1.3-android-x86_64 ]; then
-            echo "❌ Extraction failed"
+          # Debug: list files
+          echo "Files in current directory:"
+          ls -la
+          
+          # Check if extracted file exists (might be named differently)
+          if [ -f frida-server-17.1.3-android-x86_64 ]; then
+            EXTRACTED="frida-server-17.1.3-android-x86_64"
+          elif [ -f frida-server-17.1.3-android-x86_64.xz ]; then
+            echo "❌ Extraction failed - .xz file still exists"
+            exit 1
+          else
+            echo "❌ Extracted file not found, trying to find it..."
+            find . -name "frida-server*" -type f
             exit 1
           fi
-          echo "✅ Extraction complete"
+          echo "✅ Extraction complete, file: $EXTRACTED"
           
           # Push to emulator via ADB with explicit device
           echo "Pushing to emulator..."
-          docker exec android-emulator adb -s $SERIAL push $(pwd)/frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
+          docker exec android-emulator adb -s $SERIAL push $(pwd)/$EXTRACTED /data/local/tmp/frida-server
           
           # Set executable permission
           echo "Setting permissions..."

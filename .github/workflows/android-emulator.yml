@@ -21,11 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Docker
-        run: |
-          sudo apt update
-          sudo apt install -y docker.io
-          sudo systemctl start docker
+      # No Docker installation needed – it's preinstalled on the runner
 
       - name: Restore previous session
         if: github.event.inputs.persist == 'yes'

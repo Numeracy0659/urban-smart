@@ -52,6 +52,19 @@ jobs:
             sleep 10
           done
 
+      - name: Connect ADB and wait for device
+        run: |
+          echo "⏳ Connecting ADB to emulator..."
+          docker exec android-emulator adb connect localhost:5555
+          for i in {1..30}; do
+            if docker exec android-emulator adb devices | grep -q "emulator"; then
+              echo "✅ ADB connected"
+              break
+            fi
+            echo "⏳ Attempt $i/30..."
+            sleep 3
+          done
+
       - name: Install Frida server (x86_64) via ADB
         run: |
           # Download Frida server to the runner

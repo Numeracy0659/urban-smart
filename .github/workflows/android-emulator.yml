@@ -72,19 +72,39 @@ jobs:
           SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
           echo "Targeting device: $SERIAL"
           
-          # Download Frida server to the runner
-          wget -q https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
+          # Download Frida server to the runner (use curl with -L for redirects)
+          echo "Downloading Frida server..."
+          curl -L -o frida-server-17.1.3-android-x86_64.xz \
+            https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
+          
+          # Verify download
+          if [ ! -f frida-server-17.1.3-android-x86_64.xz ]; then
+            echo "❌ Download failed"
+            exit 1
+          fi
+          echo "✅ Download complete"
           
           # Extract using runner's unxz
-          unxz frida-server-17.1.3-android-x86_64.xz
+          echo "Extracting..."
+          unxz -v frida-server-17.1.3-android-x86_64.xz
+          
+          # Verify extracted file
+          if [ ! -f frida-server-17.1.3-android-x86_64 ]; then
+            echo "❌ Extraction failed"
+            exit 1
+          fi
+          echo "✅ Extraction complete"
           
           # Push to emulator via ADB with explicit device
-          docker exec android-emulator adb -s $SERIAL push frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
+          echo "Pushing to emulator..."
+          docker exec android-emulator adb -s $SERIAL push $(pwd)/frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
           
           # Set executable permission
+          echo "Setting permissions..."
           docker exec android-emulator adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
           
           # Start Frida as daemon
+          echo "Starting Frida..."
           docker exec -d android-emulator /data/local/tmp/frida-server
           
           echo "✅ Frida server installed and running"

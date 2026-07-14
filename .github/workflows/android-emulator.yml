@@ -59,6 +59,7 @@ jobs:
           for i in {1..30}; do
             if docker exec android-emulator adb devices | grep -q "emulator"; then
               echo "✅ ADB connected"
+              docker exec android-emulator adb devices
               break
             fi
             echo "⏳ Attempt $i/30..."
@@ -67,27 +68,32 @@ jobs:
 
       - name: Install Frida server (x86_64) via ADB
         run: |
+          # Get the emulator serial (handles multiple devices)
+          SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
+          echo "Targeting device: $SERIAL"
+          
           # Download Frida server to the runner
           wget -q https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
           
-          # Extract using runner's unxz (available on Ubuntu)
+          # Extract using runner's unxz
           unxz frida-server-17.1.3-android-x86_64.xz
           
-          # Push to emulator via ADB
-          docker exec android-emulator adb push frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
+          # Push to emulator via ADB with explicit device
+          docker exec android-emulator adb -s $SERIAL push frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
           
           # Set executable permission
-          docker exec android-emulator adb shell chmod +x /data/local/tmp/frida-server
+          docker exec android-emulator adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
           
-          # Start Frida as daemon (detached)
+          # Start Frida as daemon
           docker exec -d android-emulator /data/local/tmp/frida-server
           
           echo "✅ Frida server installed and running"
 
       - name: Verify Frida is running
         run: |
+          SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
           sleep 3
-          if docker exec android-emulator adb shell "ps | grep frida-server" | grep -q frida; then
+          if docker exec android-emulator adb -s $SERIAL shell "ps | grep frida-server" | grep -q frida; then
             echo "✅ Frida server is running"
           else
             echo "⚠️ Frida server may not be running, but continuing..."

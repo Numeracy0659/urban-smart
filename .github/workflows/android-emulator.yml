@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       persist:
-        description: 'Restore previous session? (yes/no)'
+        description: 'Restore previous session?'
         required: true
         default: 'yes'
         type: choice
@@ -13,33 +13,20 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
-      # ============================================================
-      # 1. Install Tor and torsocks (Docker is pre-installed on runner)
-      # ============================================================
-      - name: Install Tor and torsocks
+      - name: Install Docker
         run: |
           sudo apt update
-          sudo apt install -y tor torsocks
-          sudo service tor start
+          sudo apt install -y docker.io
+          sudo systemctl start docker
 
-      # ============================================================
-      # 2. Verify Docker is available
-      # ============================================================
-      - name: Verify Docker
-        run: docker --version
-
-      # ============================================================
-      # 3. Restore previous session (if selected)
-      # ============================================================
       - name: Restore previous session
         if: github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -48,116 +35,84 @@ jobs:
           path: ./android-data
         continue-on-error: true
 
-      # ============================================================
-      # 4. Start the Android emulator container
-      #    Image: shmayro/dockerify-android (rooted, Magisk, scrcpy-web)
-      # ============================================================
-      - name: Start Android emulator container
+      - name: Start Android emulator (no KVM required)
         run: |
           mkdir -p ./android-data
           docker run -d --name android-emulator \
             --privileged \
             -v $(pwd)/android-data:/data \
+            -v $(pwd)/android-data:/home/androidusr \
             -p 5555:5555 \
-            -p 8080:8080 \
+            -p 8000:8000 \
             shmayro/dockerify-android:latest
 
-      # ============================================================
-      # 5. Wait for emulator to boot (up to 60 attempts)
-      # ============================================================
       - name: Wait for emulator to boot
         run: |
-          echo "⏳ Waiting for emulator to boot..."
-          for i in {1..60}; do
+          echo "⏳ Waiting for emulator to boot (2-3 minutes)..."
+          for i in {1..90}; do
             if docker exec android-emulator adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
               echo "✅ Emulator booted!"
               break
             fi
-            echo "⏳ Waiting... attempt $i/60"
+            echo "⏳ Attempt $i/90..."
             sleep 10
           done
 
-      # ============================================================
-      # 6. Install Frida server on the emulator
-      # ============================================================
-      - name: Install Frida server on emulator
+      - name: Install Frida server (x86_64)
         run: |
           docker exec android-emulator bash -c "
-            wget -q https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-arm64.xz
-            unxz frida-server-17.1.3-android-arm64.xz
-            chmod +x frida-server-17.1.3-android-arm64
-            mv frida-server-17.1.3-android-arm64 /data/local/tmp/frida-server
-            /data/local/tmp/frida-server &
+            wget -q https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
+            unxz frida-server-17.1.3-android-x86_64.xz
+            chmod +x frida-server-17.1.3-android-x86_64
+            mv frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
           "
+          docker exec -d android-emulator /data/local/tmp/frida-server
 
-      # ============================================================
-      # 7. Install NPort (permanent tunnel with custom subdomain)
-      # ============================================================
-      - name: Install NPort
-        run: npm install -g nport
-
-      # ============================================================
-      # 8. Expose emulator web interface via NPort routed through Tor
-      # ============================================================
-      - name: Expose emulator web interface via NPort (Tor-routed)
-        id: tunnel
+      - name: Verify web interface is ready
         run: |
-          SUBDOMAIN="android-phone"
-          torsocks npx nport 8080 -s $SUBDOMAIN --language en > nport.log 2>&1 &
-          NPORT_PID=$!
-          echo $NPORT_PID > nport.pid
-          sleep 10
-          TUNNEL_URL="https://${SUBDOMAIN}.nport.link"
-          echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
-          cat nport.log
+          echo "⏳ Waiting for web interface on port 8000..."
           for i in {1..30}; do
-            if curl -s -o /dev/null -w "%{http_code}" $TUNNEL_URL | grep -q "200"; then
-              echo "✅ Tunnel is live at $TUNNEL_URL"
+            if docker exec android-emulator curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
+              echo "✅ Web interface ready!"
               break
             fi
-            echo "⏳ Waiting for tunnel... attempt $i/30"
+            echo "⏳ Attempt $i/30..."
             sleep 5
           done
 
-      # ============================================================
-      # 9. Display connection information
-      # ============================================================
+      - name: Expose via NPort with authentication
+        id: tunnel
+        run: |
+          AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
+          echo "auth-pass=$AUTH_PASS" >> $GITHUB_OUTPUT
+          npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
+          echo $! > nport.pid
+          sleep 15
+          TUNNEL_URL="https://urban-phone.nport.link"
+          echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+
       - name: Display connection info
         run: |
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
           echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
+          echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
           echo "🔌 ADB: adb connect localhost:5555"
-          echo "🔑 Root: Yes (Magisk pre-installed)"
+          echo "🔑 Root: Yes (Magisk preinstalled)"
           echo "🛠️  Frida: Running on port 27042"
-          echo "🛡️  Tor: Active (origin IP hidden from Cloudflare)"
-          echo "================================================"
-          echo "📝 Instructions:"
-          echo "  1. Open the URL in your browser"
-          echo "  2. Install Zapero APK (drag & drop or via ADB)"
-          echo "  3. Run Frida: frida -H localhost:27042 com.moon.tools -l hook.js"
           echo "================================================"
 
-      # ============================================================
-      # 10. Keep alive for 5h 50m (cron-job.org overlap)
-      # ============================================================
-      - name: Keep alive for 5h 50m
-        run: sleep 350m
+      - name: Keep alive
+        run: sleep 340m
 
-      # ============================================================
-      # 11. Save session data for next run
-      # ============================================================
-      - name: Save session data
+      - name: Save session
         uses: actions/upload-artifact@v4
         with:
           name: android-data
           path: ./android-data
-          retention-days: 7
+          retention-days: 90
 
-      # ============================================================
-      # 12. Cleanup
-      # ============================================================
       - name: Cleanup
         if: always()
         run: |

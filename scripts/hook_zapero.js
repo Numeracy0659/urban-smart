@@ -1,28 +1,33 @@
 Java.perform(function() {
-    console.log("[+] Frida script loaded. Hooking Zapero...");
+    console.log("[+] Frida loaded. Hooking Zapero...");
 
-    // Primary hook: HttpUrl.parse
+    // Hook java.net.URL constructor (most reliable)
+    var URL = Java.use("java.net.URL");
+    URL.$init.overload('java.lang.String').implementation = function(url) {
+        if (url && url.indexOf("web.whatsapp.com") !== -1) {
+            var newUrl = url.replace("web.whatsapp.com", "your-server.nport.link");
+            console.log("[+] Redirected URL: " + newUrl);
+            return this.$init(newUrl);
+        }
+        return this.$init(url);
+    };
+
+    // Hook OkHttp (Baileys uses this)
     var HttpUrl = Java.use("okhttp3.HttpUrl");
     HttpUrl.parse.overload('java.lang.String').implementation = function(url) {
         if (url && url.indexOf("web.whatsapp.com") !== -1) {
-            var newUrl = url.replace("web.whatsapp.com", "phantomlink-permanent.nport.link");
-            console.log("[+] Redirected: " + newUrl);
+            var newUrl = url.replace("web.whatsapp.com", "your-server.nport.link");
+            console.log("[+] Redirected OkHttp: " + newUrl);
             return this.parse(newUrl);
         }
         return this.parse(url);
     };
 
-    // Backup hook: Request.Builder.url()
-    var RequestBuilder = Java.use("okhttp3.Request$Builder");
-    RequestBuilder.url.overload('okhttp3.HttpUrl').implementation = function(url) {
-        var urlStr = url.toString();
-        if (urlStr.indexOf("web.whatsapp.com") !== -1) {
-            var newUrlStr = urlStr.replace("web.whatsapp.com", "phantomlink-permanent.nport.link");
-            var newUrl = HttpUrl.parse(newUrlStr);
-            console.log("[+] Redirected Request: " + newUrlStr);
-            return this.url(newUrl);
-        }
-        return this.url(url);
+    // Hook WebSocket connections
+    var WebSocket = Java.use("okhttp3.WebSocket");
+    WebSocket.send.overload('java.lang.String').implementation = function(message) {
+        console.log("[+] WebSocket message: " + message);
+        return this.send(message);
     };
 
     console.log("[+] Hooks installed. Ready to intercept.");

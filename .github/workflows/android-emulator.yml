@@ -58,7 +58,7 @@ jobs:
           done
 
       # ============================================================
-      # FIXED: Download Frida on host, copy into container, run with nohup
+      # FIXED: Create directory before copying
       # ============================================================
       - name: Install Frida server on emulator
         run: |
@@ -67,10 +67,13 @@ jobs:
           xz -d frida-server-17.1.3-android-arm64.xz
           chmod +x frida-server-17.1.3-android-arm64
 
-          # Copy into container
+          # Create the directory inside the container
+          docker exec android-emulator mkdir -p /data/local/tmp
+
+          # Copy the file into the container
           docker cp frida-server-17.1.3-android-arm64 android-emulator:/data/local/tmp/frida-server
 
-          # Start frida-server with nohup so it survives the docker exec
+          # Start frida-server with nohup
           docker exec android-emulator bash -c "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
 
       # ============================================================
@@ -103,7 +106,6 @@ jobs:
         id: tunnel
         run: |
           SUBDOMAIN="android-phone"
-          # Start NPort through Tor
           torsocks npx nport 8080 -s $SUBDOMAIN --language en > nport.log 2>&1 &
           NPORT_PID=$!
           echo $NPORT_PID > nport.pid

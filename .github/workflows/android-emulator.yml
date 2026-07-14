@@ -1,0 +1,171 @@
+name: Rooted Android Cloud Phone
+on:
+  workflow_dispatch:
+    inputs:
+      persist:
+        description: 'Restore previous session? (yes/no)'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - yes
+          - no
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      # ============================================================
+      # 1. Install Docker and system dependencies
+      # ============================================================
+      - name: Install Docker and dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y docker.io docker-compose tor torsocks
+          sudo systemctl start docker
+
+      # ============================================================
+      # 2. Restore previous session (if selected)
+      # ============================================================
+      - name: Restore previous session
+        if: github.event.inputs.persist == 'yes'
+        uses: actions/download-artifact@v4
+        with:
+          name: android-data
+          path: ./android-data
+        continue-on-error: true
+
+      # ============================================================
+      # 3. Start the Android emulator container
+      #    Image: shmayro/dockerify-android (rooted, Magisk, scrcpy-web)
+      # ============================================================
+      - name: Start Android emulator container
+        run: |
+          mkdir -p ./android-data
+          docker run -d --name android-emulator \
+            --privileged \
+            -v $(pwd)/android-data:/data \
+            -p 5555:5555 \
+            -p 8080:8080 \
+            shmayro/dockerify-android:latest
+
+      # ============================================================
+      # 4. Wait for emulator to boot (up to 60 attempts)
+      # ============================================================
+      - name: Wait for emulator to boot
+        run: |
+          echo "⏳ Waiting for emulator to boot..."
+          for i in {1..60}; do
+            if docker exec android-emulator adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+              echo "✅ Emulator booted!"
+              break
+            fi
+            echo "⏳ Waiting... attempt $i/60"
+            sleep 10
+          done
+
+      # ============================================================
+      # 5. Install Frida server on the emulator
+      # ============================================================
+      - name: Install Frida server on emulator
+        run: |
+          docker exec android-emulator bash -c "
+            wget -q https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-arm64.xz
+            unxz frida-server-17.1.3-android-arm64.xz
+            chmod +x frida-server-17.1.3-android-arm64
+            mv frida-server-17.1.3-android-arm64 /data/local/tmp/frida-server
+            /data/local/tmp/frida-server &
+          "
+
+      # ============================================================
+      # 6. Start Tor (for routing NPort traffic anonymously)
+      # ============================================================
+      - name: Start Tor
+        run: |
+          sudo service tor start
+          sleep 5
+
+      # ============================================================
+      # 7. Install NPort (permanent tunnel with custom subdomain)
+      # ============================================================
+      - name: Install NPort
+        run: npm install -g nport
+
+      # ============================================================
+      # 8. Expose emulator web interface via NPort routed through Tor
+      #    torsocks forces NPort traffic through Tor's SOCKS5 proxy
+      #    --language en bypasses interactive language prompt
+      # ============================================================
+      - name: Expose emulator web interface via NPort (Tor-routed)
+        id: tunnel
+        run: |
+          SUBDOMAIN="android-phone"
+          # Route NPort through Tor to hide origin IP from Cloudflare
+          torsocks npx nport 8080 -s $SUBDOMAIN --language en > nport.log 2>&1 &
+          NPORT_PID=$!
+          echo $NPORT_PID > nport.pid
+          sleep 10
+          TUNNEL_URL="https://${SUBDOMAIN}.nport.link"
+          echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+          cat nport.log
+          for i in {1..30}; do
+            if curl -s -o /dev/null -w "%{http_code}" $TUNNEL_URL | grep -q "200"; then
+              echo "✅ Tunnel is live at $TUNNEL_URL"
+              break
+            fi
+            echo "⏳ Waiting for tunnel... attempt $i/30"
+            sleep 5
+          done
+
+      # ============================================================
+      # 9. Display connection information
+      # ============================================================
+      - name: Display connection info
+        run: |
+          echo "================================================"
+          echo "🌐 ANDROID PHONE IS READY"
+          echo "================================================"
+          echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
+          echo "🔌 ADB: adb connect localhost:5555"
+          echo "🔑 Root: Yes (Magisk pre-installed)"
+          echo "🛠️  Frida: Running on port 27042"
+          echo "🛡️  Tor: Active (origin IP hidden from Cloudflare)"
+          echo "================================================"
+          echo "📝 Instructions:"
+          echo "  1. Open the URL in your browser"
+          echo "  2. Install Zapero APK (drag & drop or via ADB)"
+          echo "  3. Run Frida: frida -H localhost:27042 com.moon.tools -l hook.js"
+          echo "================================================"
+
+      # ============================================================
+      # 10. Keep alive for 5h 50m (cron-job.org overlap)
+      # ============================================================
+      - name: Keep alive for 5h 50m
+        run: sleep 350m
+
+      # ============================================================
+      # 11. Save session data for next run
+      # ============================================================
+      - name: Save session data
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-data
+          path: ./android-data
+          retention-days: 7
+
+      # ============================================================
+      # 12. Cleanup
+      # ============================================================
+      - name: Cleanup
+        if: always()
+        run: |
+          kill $(cat nport.pid) 2>/dev/null || true
+          docker stop android-emulator || true
+          docker rm android-emulator || true

@@ -22,17 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ============================================================
-      # 1. Install Tor and torsocks (Docker is already pre-installed on runner)
-      # ============================================================
       - name: Install Tor and torsocks
         run: |
           sudo apt update
           sudo apt install -y tor torsocks
 
-      # ============================================================
-      # 2. Restore previous session (if selected)
-      # ============================================================
       - name: Restore previous session
         if: github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -41,9 +35,6 @@ jobs:
           path: ./android-data
         continue-on-error: true
 
-      # ============================================================
-      # 3. Start the Android emulator container (using pre-installed Docker)
-      # ============================================================
       - name: Start Android emulator container
         run: |
           mkdir -p ./android-data
@@ -54,9 +45,6 @@ jobs:
             -p 8080:8080 \
             shmayro/dockerify-android:latest
 
-      # ============================================================
-      # 4. Wait for emulator to boot (up to 60 attempts)
-      # ============================================================
       - name: Wait for emulator to boot
         run: |
           echo "⏳ Waiting for emulator to boot..."
@@ -70,34 +58,63 @@ jobs:
           done
 
       # ============================================================
-      # 5. Install Frida server on the emulator
+      # FIX 1: Verify web server is running before tunnel
+      # ============================================================
+      - name: Verify web server is running
+        run: |
+          echo "⏳ Waiting for web server on port 8080..."
+          for i in {1..30}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 | grep -q "200"; then
+              echo "✅ Web server is running"
+              break
+            fi
+            echo "⏳ Waiting for web server... attempt $i/30"
+            sleep 5
+          done
+
+      # ============================================================
+      # FIX 2: Install Frida server using xz -d (more commonly available)
       # ============================================================
       - name: Install Frida server on emulator
         run: |
           docker exec android-emulator bash -c "
+            # Download Frida server
             wget -q https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-arm64.xz
-            unxz frida-server-17.1.3-android-arm64.xz
+
+            # Try xz -d first, then fallback to unxz, then busybox
+            if command -v xz &> /dev/null; then
+              xz -d frida-server-17.1.3-android-arm64.xz
+            elif command -v unxz &> /dev/null; then
+              unxz frida-server-17.1.3-android-arm64.xz
+            elif command -v busybox &> /dev/null && busybox --list | grep -q unxz; then
+              busybox unxz frida-server-17.1.3-android-arm64.xz
+            else
+              echo "ERROR: No xz decompression tool found. Installing busybox..."
+              # Attempt to install busybox if pkg is available
+              if command -v pkg &> /dev/null; then
+                pkg install busybox -y
+                busybox unxz frida-server-17.1.3-android-arm64.xz
+              else
+                echo "FATAL: Cannot decompress Frida server. Skipping."
+                exit 1
+              fi
+            fi
+
             chmod +x frida-server-17.1.3-android-arm64
             mv frida-server-17.1.3-android-arm64 /data/local/tmp/frida-server
             /data/local/tmp/frida-server &
           "
 
-      # ============================================================
-      # 6. Start Tor (for routing NPort traffic anonymously)
-      # ============================================================
       - name: Start Tor
         run: |
           sudo service tor start
           sleep 5
 
-      # ============================================================
-      # 7. Install NPort (permanent tunnel with custom subdomain)
-      # ============================================================
       - name: Install NPort
         run: npm install -g nport
 
       # ============================================================
-      # 8. Expose emulator web interface via NPort routed through Tor
+      # FIX 3: Longer wait for tunnel to establish
       # ============================================================
       - name: Expose emulator web interface via NPort (Tor-routed)
         id: tunnel
@@ -106,7 +123,8 @@ jobs:
           torsocks npx nport 8080 -s $SUBDOMAIN --language en > nport.log 2>&1 &
           NPORT_PID=$!
           echo $NPORT_PID > nport.pid
-          sleep 10
+          echo "⏳ Waiting 15s for tunnel to establish..."
+          sleep 15
           TUNNEL_URL="https://${SUBDOMAIN}.nport.link"
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
           cat nport.log
@@ -119,9 +137,6 @@ jobs:
             sleep 5
           done
 
-      # ============================================================
-      # 9. Display connection information
-      # ============================================================
       - name: Display connection info
         run: |
           echo "================================================"
@@ -139,15 +154,9 @@ jobs:
           echo "  3. Run Frida: frida -H localhost:27042 com.moon.tools -l hook.js"
           echo "================================================"
 
-      # ============================================================
-      # 10. Keep alive for 5h 50m (cron-job.org overlap)
-      # ============================================================
       - name: Keep alive for 5h 50m
         run: sleep 350m
 
-      # ============================================================
-      # 11. Save session data for next run
-      # ============================================================
       - name: Save session data
         uses: actions/upload-artifact@v4
         with:
@@ -155,9 +164,6 @@ jobs:
           path: ./android-data
           retention-days: 7
 
-      # ============================================================
-      # 12. Cleanup
-      # ============================================================
       - name: Cleanup
         if: always()
         run: |

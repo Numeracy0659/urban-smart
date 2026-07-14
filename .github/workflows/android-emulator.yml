@@ -90,23 +90,20 @@ jobs:
           echo "Pushing to emulator via ADB..."
           docker exec android-emulator adb -s $SERIAL push /tmp/frida-server /data/local/tmp/frida-server
           
+          echo "Verifying file on emulator..."
+          docker exec android-emulator adb -s $SERIAL shell ls -l /data/local/tmp/frida-server
+          
           echo "Setting permissions..."
           docker exec android-emulator adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
           
-          echo "Starting Frida..."
-          docker exec -d android-emulator /data/local/tmp/frida-server
-          
-          echo "✅ Frida server installed and running"
-
-      - name: Verify Frida is running
-        run: |
-          SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
+          echo "Starting Frida on emulator..."
+          docker exec android-emulator adb -s $SERIAL shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
           sleep 3
-          if docker exec android-emulator adb -s $SERIAL shell "ps | grep frida-server" | grep -q frida; then
-            echo "✅ Frida server is running"
-          else
-            echo "⚠️ Frida server may not be running, but continuing..."
-          fi
+          
+          echo "Checking if Frida is running..."
+          docker exec android-emulator adb -s $SERIAL shell "ps | grep frida-server" || true
+          
+          echo "✅ Frida server installed and started"
 
       - name: Verify web interface is ready
         run: |

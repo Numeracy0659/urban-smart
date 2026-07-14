@@ -23,13 +23,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # ============================================================
-      # 1. Install Docker and system dependencies
+      # 1. Install Tor and torsocks (Docker is already pre-installed on runner)
       # ============================================================
-      - name: Install Docker and dependencies
+      - name: Install Tor and torsocks
         run: |
           sudo apt update
-          sudo apt install -y docker.io docker-compose tor torsocks
-          sudo systemctl start docker
+          sudo apt install -y tor torsocks
 
       # ============================================================
       # 2. Restore previous session (if selected)
@@ -43,8 +42,7 @@ jobs:
         continue-on-error: true
 
       # ============================================================
-      # 3. Start the Android emulator container
-      #    Image: shmayro/dockerify-android (rooted, Magisk, scrcpy-web)
+      # 3. Start the Android emulator container (using pre-installed Docker)
       # ============================================================
       - name: Start Android emulator container
         run: |
@@ -100,14 +98,11 @@ jobs:
 
       # ============================================================
       # 8. Expose emulator web interface via NPort routed through Tor
-      #    torsocks forces NPort traffic through Tor's SOCKS5 proxy
-      #    --language en bypasses interactive language prompt
       # ============================================================
       - name: Expose emulator web interface via NPort (Tor-routed)
         id: tunnel
         run: |
           SUBDOMAIN="android-phone"
-          # Route NPort through Tor to hide origin IP from Cloudflare
           torsocks npx nport 8080 -s $SUBDOMAIN --language en > nport.log 2>&1 &
           NPORT_PID=$!
           echo $NPORT_PID > nport.pid

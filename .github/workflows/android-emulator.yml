@@ -1,4 +1,4 @@
-name: Rooted Android Cloud Phone (Pixel 8 Pro - Final)
+name: Rooted Android Cloud Phone (Pixel 8 Pro - Production)
 on:
   push:
     branches: [ main ]
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # ----------------------------------------------------------------------
-      # 1. Restore session
+      # 1. Restore session (download artifact and decrypt if needed)
       # ----------------------------------------------------------------------
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -60,7 +60,7 @@ jobs:
           fi
 
       # ----------------------------------------------------------------------
-      # 2. Create docker-compose.yml
+      # 2. Create docker-compose.yml with official names and Pixel 8 Pro config
       # ----------------------------------------------------------------------
       - name: Create docker-compose.yml
         run: |
@@ -113,7 +113,7 @@ jobs:
           YAML
 
       # ----------------------------------------------------------------------
-      # 3. Start stack
+      # 3. Start stack with docker compose
       # ----------------------------------------------------------------------
       - name: Start Android stack with docker compose
         run: |
@@ -132,7 +132,7 @@ jobs:
           done
 
       # ----------------------------------------------------------------------
-      # 4. Restore data inside container
+      # 4. Restore data inside container (if persist)
       # ----------------------------------------------------------------------
       - name: Restore data inside container (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -157,40 +157,52 @@ jobs:
         continue-on-error: true
 
       # ----------------------------------------------------------------------
-      # 5. Trigger ROOT_SETUP script (the fix)
+      # 5. Elevate ADB to root and disable dm-verity (make system writable)
       # ----------------------------------------------------------------------
-      - name: Trigger built-in root setup
-        run: |
-          echo "🔧 Triggering built-in root setup script..."
-          SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
-          
-          # Run the root setup script inside the container
-          docker exec dockerify-android adb -s $SERIAL shell "sh /root/root_setup.sh"
-          
-          # Wait for setup to complete and reboot
-          echo "⏳ Waiting for root setup to complete..."
-          sleep 30
-          for i in {1..60}; do
-            if docker exec dockerify-android adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "✅ Root setup complete, emulator ready"
-              break
-            fi
-            sleep 5
-          done
-
-      # ----------------------------------------------------------------------
-      # 6. Elevate ADB to root
-      # ----------------------------------------------------------------------
-      - name: Enable root ADB
+      - name: Enable root ADB and disable dm-verity
         run: |
           echo "🔑 Elevating ADB to root..."
           docker exec dockerify-android adb root
           sleep 3
           docker exec dockerify-android adb connect localhost:5555
-          docker exec dockerify-android adb devices
+          SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
+          
+          echo "🔧 Disabling dm-verity to allow system writes..."
+          docker exec dockerify-android adb -s $SERIAL shell "disable-verity"
+          
+          echo "⏳ Rebooting to apply dm-verity changes..."
+          docker exec dockerify-android adb -s $SERIAL shell reboot
+          
+          # Wait for reboot
+          sleep 30
+          for i in {1..60}; do
+            if docker exec dockerify-android adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+              echo "✅ Device rebooted successfully"
+              break
+            fi
+            sleep 5
+          done
+          
+          # Re‑root after reboot
+          docker exec dockerify-android adb root
+          sleep 3
+          docker exec dockerify-android adb connect localhost:5555
+          
+          # Remount system as writable
+          echo "🔧 Remounting system as writable..."
+          docker exec dockerify-android adb -s $SERIAL shell "mount -o rw,remount /"
+          
+          # Verify writability
+          if docker exec dockerify-android adb -s $SERIAL shell "touch /system/test_write 2>/dev/null" ; then
+            docker exec dockerify-android adb -s $SERIAL shell "rm /system/test_write"
+            echo "✅ System partition is now writable"
+          else
+            echo "⚠️ System still read-only, trying 'adb remount'..."
+            docker exec dockerify-android adb -s $SERIAL remount
+          fi
 
       # ----------------------------------------------------------------------
-      # 7. Install Frida server
+      # 6. Install Frida server (with root ADB)
       # ----------------------------------------------------------------------
       - name: Install Frida server
         run: |
@@ -211,17 +223,17 @@ jobs:
           fi
 
       # ----------------------------------------------------------------------
-      # 8. Configure Pixel 8 Pro build.prop
+      # 7. Configure Pixel 8 Pro build.prop (now writable)
       # ----------------------------------------------------------------------
       - name: Configure Pixel 8 Pro build.prop
         run: |
           echo "📱 Configuring device as Google Pixel 8 Pro..."
           SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
           
-          # Now system should be writable after ROOT_SETUP
-          docker exec dockerify-android adb -s $SERIAL shell mount -o rw,remount /
+          # Backup original
           docker exec dockerify-android adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
           
+          # Set Pixel 8 Pro properties
           docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop"
           docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.brand=Google' >> /system/build.prop"
           docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.manufacturer=Google' >> /system/build.prop"
@@ -229,12 +241,16 @@ jobs:
           docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.device=husky' >> /system/build.prop"
           docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.build.product=husky' >> /system/build.prop"
           
+          # Set permissions
           docker exec dockerify-android adb -s $SERIAL shell chmod 644 /system/build.prop
+          
+          # Remount as read-only
           docker exec dockerify-android adb -s $SERIAL shell mount -o ro,remount /
           
           echo "✅ Pixel 8 Pro profile applied. Rebooting emulator..."
           docker exec dockerify-android adb -s $SERIAL shell reboot
           
+          # Wait for reboot
           sleep 30
           for i in {1..60}; do
             if docker exec dockerify-android adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
@@ -245,7 +261,7 @@ jobs:
           done
 
       # ----------------------------------------------------------------------
-      # 9. Verify scrcpy-web
+      # 8. Verify scrcpy-web is serving
       # ----------------------------------------------------------------------
       - name: Verify scrcpy-web is serving
         run: |
@@ -261,7 +277,7 @@ jobs:
           docker logs scrcpy-web --tail 20
 
       # ----------------------------------------------------------------------
-      # 10. NPort tunnel
+      # 9. Expose via NPort with authentication
       # ----------------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
@@ -282,7 +298,7 @@ jobs:
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
       # ----------------------------------------------------------------------
-      # 11. Display info
+      # 10. Display connection info
       # ----------------------------------------------------------------------
       - name: Display info
         run: |
@@ -293,7 +309,7 @@ jobs:
           echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
           echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
           echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"
-          echo "🔑 Root: Yes (Magisk preinstalled)"
+          echo "🔑 Root: Yes (Magisk preinstalled, dm-verity disabled)"
           echo "🛠️  Frida: Running on emulator (port 27042)"
           echo "================================================"
           echo "To use ADB locally:"
@@ -302,12 +318,12 @@ jobs:
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
       # ----------------------------------------------------------------------
-      # 12. Keep alive and save session
+      # 11. Keep alive and save session (robust backup)
       # ----------------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
 
-      - name: Save session
+      - name: Save session (tar from inside container)
         if: always()
         run: |
           if docker ps -a --filter "name=dockerify-android" --format '{{.Names}}' | grep -q dockerify-android; then
@@ -336,7 +352,7 @@ jobs:
           retention-days: 90
 
       # ----------------------------------------------------------------------
-      # 13. Cleanup
+      # 12. Cleanup
       # ----------------------------------------------------------------------
       - name: Cleanup
         if: always()

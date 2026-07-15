@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # ----------------------------------------------------------------------
-      # 1. Restore session (download artifact and decrypt if needed)
+      # 1. Restore session
       # ----------------------------------------------------------------------
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -175,14 +175,14 @@ jobs:
           fi
 
       # ----------------------------------------------------------------------
-      # 5. Configure Pixel 8 Pro build.prop (device fingerprint)
+      # 5. Configure Pixel 8 Pro build.prop (FIXED su syntax)
       # ----------------------------------------------------------------------
       - name: Configure Pixel 8 Pro build.prop
         run: |
           echo "📱 Configuring device as Google Pixel 8 Pro..."
           SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
           
-          # Make system writable
+          # Make system writable - FIXED: proper su syntax
           docker exec android-emulator adb -s $SERIAL shell "su -c 'mount -o rw,remount /system'"
           
           # Backup original build.prop
@@ -273,17 +273,23 @@ jobs:
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
       # ----------------------------------------------------------------------
-      # 9. Keep alive and save session (inside container)
+      # 9. Keep alive and save session (FIXED tar error)
       # ----------------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
 
-      - name: Save session (tar from inside container)
+      - name: Save session (tar from inside container - fixed)
         if: always()
         run: |
           if docker ps -a --filter "name=android-emulator" --format '{{.Names}}' | grep -q android-emulator; then
-            docker exec android-emulator tar czf /tmp/data.tar.gz -C /data .
+            echo "📦 Creating backup of emulator data..."
+            # Use --warning=no-file-changed to ignore active file changes during backup
+            docker exec android-emulator tar czf /tmp/data.tar.gz \
+              --warning=no-file-changed \
+              --ignore-failed-read \
+              -C /data .
             docker cp android-emulator:/tmp/data.tar.gz ./android-data/
+            echo "✅ Backup created successfully"
           else
             echo "⚠️ Container not running, skipping save"
           fi

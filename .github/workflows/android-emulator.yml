@@ -1,4 +1,4 @@
-name: Rooted Android Cloud Phone (Final with Debug)
+name: Rooted Android Cloud Phone (Professional)
 on:
   workflow_dispatch:
     inputs:
@@ -29,7 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Restore session (download the tar artifact)
+      # ----------------------------------------------------------------------
+      # 1. Restore session
+      # ----------------------------------------------------------------------
       - name: Restore session data
         if: github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -47,27 +49,58 @@ jobs:
             echo "✅ Decrypted"
           fi
 
-      # Start emulator container
-      - name: Start Android emulator
+      # ----------------------------------------------------------------------
+      # 2. Create docker-compose.yml (the professional way)
+      # ----------------------------------------------------------------------
+      - name: Create docker-compose.yml
+        run: |
+          cat > docker-compose.yml << 'YAML'
+          services:
+            android-emulator:
+              container_name: android-emulator
+              image: shmayro/dockerify-android:latest
+              ports:
+                - "5555:5555"
+              volumes:
+                - ./android-data:/data
+                - ./android-data:/home/androidusr
+              privileged: true
+              environment:
+                - RAM_SIZE=2048
+                - SCREEN_RESOLUTION=720x1280
+                - SCREEN_DENSITY=320
+
+            scrcpy-web:
+              container_name: scrcpy-web
+              image: shmayro/scrcpy-web:latest
+              ports:
+                - "8000:8000"
+              privileged: true
+              depends_on:
+                android-emulator:
+                  condition: service_healthy
+              command: >
+                sh -c "
+                  echo '⏳ Waiting for emulator...' &&
+                  for i in 1 2 3 4 5 6 7 8 9 10; do
+                    if adb connect android-emulator:5555 2>/dev/null | grep -q 'connected'; then
+                      echo '✅ ADB connected' &&
+                      break
+                    fi &&
+                    echo 'Attempt $i/10...' &&
+                    sleep 3
+                  done &&
+                  npm start
+                "
+          YAML
+
+      # ----------------------------------------------------------------------
+      # 3. Start both containers with docker-compose
+      # ----------------------------------------------------------------------
+      - name: Start Android stack with docker-compose
         run: |
           mkdir -p ./android-data
-          docker run -d --name android-emulator \
-            --privileged \
-            -v $(pwd)/android-data:/data \
-            -v $(pwd)/android-data:/home/androidusr \
-            -p 5555:5555 \
-            shmayro/dockerify-android:latest
-
-      # Restore data inside container (if persist)
-      - name: Restore data inside container
-        if: github.event.inputs.persist == 'yes'
-        run: |
-          if [ -f ./android-data/data.tar.gz ]; then
-            docker cp ./android-data/data.tar.gz android-emulator:/tmp/
-            docker exec android-emulator tar xzf /tmp/data.tar.gz -C /data
-            docker exec android-emulator rm -f /tmp/data.tar.gz
-            echo "✅ Restored session"
-          fi
+          docker-compose up -d
 
       - name: Wait for emulator to boot
         run: |
@@ -80,20 +113,9 @@ jobs:
             sleep $(( i < 30 ? 5 : i < 60 ? 10 : 15 ))
           done
 
-      - name: Connect ADB and wait for device
-        run: |
-          echo "⏳ Connecting ADB..."
-          docker exec android-emulator adb connect localhost:5555
-          for i in {1..40}; do
-            if docker exec android-emulator adb devices | grep -q "emulator"; then
-              echo "✅ ADB ready"
-              docker exec android-emulator adb devices
-              break
-            fi
-            sleep 3
-          done
-
-      # Install & run Frida
+      # ----------------------------------------------------------------------
+      # 4. Install Frida (using ADB from host)
+      # ----------------------------------------------------------------------
       - name: Install Frida server
         run: |
           SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
@@ -112,45 +134,25 @@ jobs:
             echo "⚠️ Frida not detected, but continuing..."
           fi
 
-      # Start scrcpy-web container
-      - name: Start scrcpy-web container
-        run: |
-          docker run -d --name scrcpy-web \
-            --privileged \
-            -p 8000:8000 \
-            shmayro/scrcpy-web:latest \
-            sh -c "
-              for i in {1..30}; do
-                if adb connect android-emulator:5555 2>/dev/null | grep -q 'connected'; then
-                  break
-                fi
-                sleep 2
-              done
-              npm start
-            "
-
-      # Debug scrcpy-web logs and ADB connectivity
-      - name: Debug scrcpy-web
-        run: |
-          echo "📋 scrcpy-web logs (last 30 lines):"
-          docker logs scrcpy-web --tail 30
-          echo ""
-          echo "🔌 Testing ADB connection from scrcpy-web to android-emulator:"
-          docker exec scrcpy-web adb connect android-emulator:5555
-          docker exec scrcpy-web adb devices
-
+      # ----------------------------------------------------------------------
+      # 5. Verify scrcpy-web is serving
+      # ----------------------------------------------------------------------
       - name: Verify scrcpy-web is serving
         run: |
           echo "⏳ Waiting for web server on port 8000..."
           for i in {1..40}; do
-            if docker exec scrcpy-web curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
               echo "✅ Web server ready"
               break
             fi
             sleep 3
           done
+          echo "📋 scrcpy-web logs:"
+          docker logs scrcpy-web --tail 20
 
-      # Expose via NPort
+      # ----------------------------------------------------------------------
+      # 6. NPort tunnel
+      # ----------------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
         run: |
@@ -169,6 +171,9 @@ jobs:
           TUNNEL_URL="https://urban-phone.nport.link"
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
+      # ----------------------------------------------------------------------
+      # 7. Display info
+      # ----------------------------------------------------------------------
       - name: Display info
         run: |
           echo "================================================"
@@ -185,6 +190,9 @@ jobs:
           echo "  adb forward tcp:27042 tcp:27042"
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
+      # ----------------------------------------------------------------------
+      # 8. Keep alive and save session
+      # ----------------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
 
@@ -206,9 +214,11 @@ jobs:
           path: ./android-data/data.tar.gz*
           retention-days: 90
 
+      # ----------------------------------------------------------------------
+      # 9. Cleanup
+      # ----------------------------------------------------------------------
       - name: Cleanup
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
-          docker stop android-emulator scrcpy-web 2>/dev/null || true
-          docker rm android-emulator scrcpy-web 2>/dev/null || true
+          docker-compose down -v 2>/dev/null || true

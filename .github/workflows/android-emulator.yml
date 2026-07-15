@@ -1,4 +1,4 @@
-name: Rooted Android Cloud Phone (Production)
+name: Rooted Android Cloud Phone (Pixel 8 Pro)
 on:
   push:
     branches: [ main ]
@@ -34,11 +34,7 @@ jobs:
       # ----------------------------------------------------------------------
       # 1. Restore session (download artifact and decrypt if needed)
       # ----------------------------------------------------------------------
-      - name: Restore session data
-        # For push events, we can't use inputs, so we set a default: we'll always try to restore
-        # but we will condition on a file existence or we'll use a default value.
-        # Since the workflow runs on push, we can't use inputs. We'll use a default of 'yes' for persist.
-        # We'll set persist_default to 'yes' for push events, and allow inputs for manual.
+      - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
         with:
@@ -46,8 +42,7 @@ jobs:
           path: ./android-data
         continue-on-error: true
 
-      # For push events, we'll also try to restore if artifact exists (we'll just download always, but it may fail)
-      - name: Restore session data (push fallback)
+      - name: Restore session data (push)
         if: github.event_name == 'push'
         uses: actions/download-artifact@v4
         with:
@@ -55,7 +50,7 @@ jobs:
           path: ./android-data
         continue-on-error: true
 
-      - name: Decrypt session (if encrypted)
+      - name: Decrypt session (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' && github.event.inputs.persist == 'yes'
         run: |
           if [ -f ./android-data/data.tar.gz.gpg ]; then
@@ -64,13 +59,8 @@ jobs:
             echo "✅ Decrypted"
           fi
 
-      # For push, we'll try to decrypt if the file exists (but without GPG passphrase, maybe we skip encryption)
-      - name: Decrypt session (push fallback)
-        if: github.event_name == 'push' && github.event.inputs.encrypt == 'yes'  # not applicable, but we'll skip
-        run: echo "Encryption not supported for push events; skipping decrypt"
-
       # ----------------------------------------------------------------------
-      # 2. Create docker-compose.yml (official architecture)
+      # 2. Create docker-compose.yml with Pixel 8 Pro profile
       # ----------------------------------------------------------------------
       - name: Create docker-compose.yml
         run: |
@@ -86,9 +76,12 @@ jobs:
                 - ./android-data:/home/androidusr
               privileged: true
               environment:
-                - RAM_SIZE=2048
-                - SCREEN_RESOLUTION=720x1280
-                - SCREEN_DENSITY=320
+                - RAM_SIZE=4096
+                - SCREEN_RESOLUTION=1344x2992
+                - SCREEN_DENSITY=489
+                - ROOT_SETUP=1
+                - ARM_TRANSLATION=1
+                - GAPPS_SETUP=1
               healthcheck:
                 test: ["CMD", "adb", "shell", "getprop", "sys.boot_completed"]
                 interval: 10s
@@ -120,7 +113,7 @@ jobs:
           YAML
 
       # ----------------------------------------------------------------------
-      # 3. Start stack with docker compose (plugin, not hyphen)
+      # 3. Start stack with docker compose
       # ----------------------------------------------------------------------
       - name: Start Android stack with docker compose
         run: |
@@ -138,7 +131,7 @@ jobs:
             sleep $(( i < 30 ? 5 : i < 60 ? 10 : 15 ))
           done
 
-      - name: Restore data inside container (if persist)
+      - name: Restore data inside container (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         run: |
           if [ -f ./android-data/data.tar.gz ]; then
@@ -149,7 +142,7 @@ jobs:
           fi
         continue-on-error: true
 
-      - name: Restore data inside container (push fallback - try always)
+      - name: Restore data inside container (push)
         if: github.event_name == 'push'
         run: |
           if [ -f ./android-data/data.tar.gz ]; then
@@ -161,7 +154,7 @@ jobs:
         continue-on-error: true
 
       # ----------------------------------------------------------------------
-      # 4. Install Frida (as root on emulator)
+      # 4. Install Frida server (as root)
       # ----------------------------------------------------------------------
       - name: Install Frida server
         run: |
@@ -182,7 +175,48 @@ jobs:
           fi
 
       # ----------------------------------------------------------------------
-      # 5. Verify scrcpy-web is serving
+      # 5. Configure Pixel 8 Pro build.prop (device fingerprint)
+      # ----------------------------------------------------------------------
+      - name: Configure Pixel 8 Pro build.prop
+        run: |
+          echo "📱 Configuring device as Google Pixel 8 Pro..."
+          SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
+          
+          # Make system writable
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'mount -o rw,remount /system'"
+          
+          # Backup original build.prop
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'cp /system/build.prop /system/build.prop.backup'"
+          
+          # Set Pixel 8 Pro properties
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.model=Pixel 8 Pro\" >> /system/build.prop'"
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.brand=Google\" >> /system/build.prop'"
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.manufacturer=Google\" >> /system/build.prop'"
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.name=husky\" >> /system/build.prop'"
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.device=husky\" >> /system/build.prop'"
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.build.product=husky\" >> /system/build.prop'"
+          
+          # Set permissions
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'chmod 644 /system/build.prop'"
+          
+          # Remount as read-only
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'mount -o ro,remount /system'"
+          
+          echo "✅ Pixel 8 Pro profile applied. Rebooting emulator..."
+          docker exec android-emulator adb -s $SERIAL shell "su -c 'reboot'"
+          
+          # Wait for reboot
+          sleep 30
+          for i in {1..60}; do
+            if docker exec android-emulator adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+              echo "✅ Emulator rebooted with Pixel 8 Pro profile"
+              break
+            fi
+            sleep 5
+          done
+
+      # ----------------------------------------------------------------------
+      # 6. Verify scrcpy-web is serving
       # ----------------------------------------------------------------------
       - name: Verify scrcpy-web is serving
         run: |
@@ -198,7 +232,7 @@ jobs:
           docker logs scrcpy-web --tail 20
 
       # ----------------------------------------------------------------------
-      # 6. Expose via NPort with authentication
+      # 7. Expose via NPort with authentication
       # ----------------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
@@ -219,13 +253,14 @@ jobs:
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
       # ----------------------------------------------------------------------
-      # 7. Display connection info
+      # 8. Display connection info
       # ----------------------------------------------------------------------
       - name: Display info
         run: |
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
+          echo "📱 Device: Google Pixel 8 Pro (GrapheneOS style)"
           echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
           echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
           echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"
@@ -238,7 +273,7 @@ jobs:
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
       # ----------------------------------------------------------------------
-      # 8. Keep alive and save session (inside container)
+      # 9. Keep alive and save session (inside container)
       # ----------------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
@@ -246,7 +281,6 @@ jobs:
       - name: Save session (tar from inside container)
         if: always()
         run: |
-          # Only attempt if container exists
           if docker ps -a --filter "name=android-emulator" --format '{{.Names}}' | grep -q android-emulator; then
             docker exec android-emulator tar czf /tmp/data.tar.gz -C /data .
             docker cp android-emulator:/tmp/data.tar.gz ./android-data/
@@ -267,7 +301,7 @@ jobs:
           retention-days: 90
 
       # ----------------------------------------------------------------------
-      # 9. Cleanup (ignore errors)
+      # 10. Cleanup
       # ----------------------------------------------------------------------
       - name: Cleanup
         if: always()

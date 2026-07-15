@@ -1,5 +1,7 @@
 name: Rooted Android Cloud Phone (Production)
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
     inputs:
       persist:
@@ -33,7 +35,20 @@ jobs:
       # 1. Restore session (download artifact and decrypt if needed)
       # ----------------------------------------------------------------------
       - name: Restore session data
-        if: github.event.inputs.persist == 'yes'
+        # For push events, we can't use inputs, so we set a default: we'll always try to restore
+        # but we will condition on a file existence or we'll use a default value.
+        # Since the workflow runs on push, we can't use inputs. We'll use a default of 'yes' for persist.
+        # We'll set persist_default to 'yes' for push events, and allow inputs for manual.
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
+        uses: actions/download-artifact@v4
+        with:
+          name: android-data
+          path: ./android-data
+        continue-on-error: true
+
+      # For push events, we'll also try to restore if artifact exists (we'll just download always, but it may fail)
+      - name: Restore session data (push fallback)
+        if: github.event_name == 'push'
         uses: actions/download-artifact@v4
         with:
           name: android-data
@@ -41,13 +56,18 @@ jobs:
         continue-on-error: true
 
       - name: Decrypt session (if encrypted)
-        if: github.event.inputs.encrypt == 'yes' && github.event.inputs.persist == 'yes'
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' && github.event.inputs.persist == 'yes'
         run: |
           if [ -f ./android-data/data.tar.gz.gpg ]; then
             gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -d ./android-data/data.tar.gz.gpg > ./android-data/data.tar.gz
             rm -f ./android-data/data.tar.gz.gpg
             echo "✅ Decrypted"
           fi
+
+      # For push, we'll try to decrypt if the file exists (but without GPG passphrase, maybe we skip encryption)
+      - name: Decrypt session (push fallback)
+        if: github.event_name == 'push' && github.event.inputs.encrypt == 'yes'  # not applicable, but we'll skip
+        run: echo "Encryption not supported for push events; skipping decrypt"
 
       # ----------------------------------------------------------------------
       # 2. Create docker-compose.yml (official architecture)
@@ -100,14 +120,12 @@ jobs:
           YAML
 
       # ----------------------------------------------------------------------
-      # 3. Start stack with docker-compose
+      # 3. Start stack with docker compose (plugin, not hyphen)
       # ----------------------------------------------------------------------
-      - name: Start Android stack with docker-compose
+      - name: Start Android stack with docker compose
         run: |
           mkdir -p ./android-data
-          # If persist and we have a tar, restore it before starting?
-          # We'll do it after start, because the container must exist.
-          docker-compose up -d
+          docker compose up -d
 
       - name: Wait for emulator to boot (extra safety)
         run: |
@@ -121,7 +139,7 @@ jobs:
           done
 
       - name: Restore data inside container (if persist)
-        if: github.event.inputs.persist == 'yes'
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         run: |
           if [ -f ./android-data/data.tar.gz ]; then
             docker cp ./android-data/data.tar.gz android-emulator:/tmp/
@@ -129,6 +147,18 @@ jobs:
             docker exec android-emulator rm -f /tmp/data.tar.gz
             echo "✅ Restored session"
           fi
+        continue-on-error: true
+
+      - name: Restore data inside container (push fallback - try always)
+        if: github.event_name == 'push'
+        run: |
+          if [ -f ./android-data/data.tar.gz ]; then
+            docker cp ./android-data/data.tar.gz android-emulator:/tmp/
+            docker exec android-emulator tar xzf /tmp/data.tar.gz -C /data
+            docker exec android-emulator rm -f /tmp/data.tar.gz
+            echo "✅ Restored session"
+          fi
+        continue-on-error: true
 
       # ----------------------------------------------------------------------
       # 4. Install Frida (as root on emulator)
@@ -216,9 +246,14 @@ jobs:
       - name: Save session (tar from inside container)
         if: always()
         run: |
-          docker exec android-emulator tar czf /tmp/data.tar.gz -C /data .
-          docker cp android-emulator:/tmp/data.tar.gz ./android-data/
-          if [ "${{ github.event.inputs.encrypt }}" == "yes" ]; then
+          # Only attempt if container exists
+          if docker ps -a --filter "name=android-emulator" --format '{{.Names}}' | grep -q android-emulator; then
+            docker exec android-emulator tar czf /tmp/data.tar.gz -C /data .
+            docker cp android-emulator:/tmp/data.tar.gz ./android-data/
+          else
+            echo "⚠️ Container not running, skipping save"
+          fi
+          if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ] && [ -f ./android-data/data.tar.gz ]; then
             gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c ./android-data/data.tar.gz
             rm -f ./android-data/data.tar.gz
           fi
@@ -232,10 +267,10 @@ jobs:
           retention-days: 90
 
       # ----------------------------------------------------------------------
-      # 9. Cleanup
+      # 9. Cleanup (ignore errors)
       # ----------------------------------------------------------------------
       - name: Cleanup
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
-          docker-compose down -v 2>/dev/null || true
+          docker compose down -v 2>/dev/null || true

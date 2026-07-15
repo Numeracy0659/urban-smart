@@ -29,9 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ----------------------------------------------------------------------
-      # 1. Restore session (decrypt and extract inside container)
-      # ----------------------------------------------------------------------
+      # Restore session (download the tar artifact)
       - name: Restore session data
         if: github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -49,9 +47,7 @@ jobs:
             echo "✅ Decrypted"
           fi
 
-      # ----------------------------------------------------------------------
-      # 2. Launch emulator container with volumes
-      # ----------------------------------------------------------------------
+      # Start emulator container
       - name: Start Android emulator
         run: |
           mkdir -p ./android-data
@@ -62,8 +58,9 @@ jobs:
             -p 5555:5555 \
             shmayro/dockerify-android:latest
 
-      - name: Restore data inside container (if persist)
-        if: github.event.inputs.persist == 'yes' && github.event.inputs.encrypt != 'yes'
+      # Restore data inside container (if persist)
+      - name: Restore data inside container
+        if: github.event.inputs.persist == 'yes'
         run: |
           if [ -f ./android-data/data.tar.gz ]; then
             docker cp ./android-data/data.tar.gz android-emulator:/tmp/
@@ -97,21 +94,20 @@ jobs:
           done
 
       # ----------------------------------------------------------------------
-      # 3. Install & run Frida (as root on emulator)
+      # Install & run Frida (no su, adbd already root)
       # ----------------------------------------------------------------------
       - name: Install Frida server
         run: |
           SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
           echo "Target: $SERIAL"
-          # Download with original name
           curl -L -o frida-server-17.1.3-android-x86_64.xz \
             https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
           unxz frida-server-17.1.3-android-x86_64.xz
-          # Now file is frida-server-17.1.3-android-x86_64
           docker cp frida-server-17.1.3-android-x86_64 android-emulator:/tmp/frida-server
           docker exec android-emulator adb -s $SERIAL push /tmp/frida-server /data/local/tmp/frida-server
           docker exec android-emulator adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'nohup /data/local/tmp/frida-server > /dev/null 2>&1 &'"
+          # Start Frida directly (adbd runs as root, so no su needed)
+          docker exec android-emulator adb -s $SERIAL shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
           sleep 3
           if docker exec android-emulator adb -s $SERIAL shell "ps -A | grep frida-server" | grep -q frida; then
             echo "✅ Frida is running"
@@ -120,7 +116,7 @@ jobs:
           fi
 
       # ----------------------------------------------------------------------
-      # 4. Launch scrcpy-web container
+      # scrcpy-web container
       # ----------------------------------------------------------------------
       - name: Start scrcpy-web container
         run: |
@@ -150,7 +146,7 @@ jobs:
           done
 
       # ----------------------------------------------------------------------
-      # 5. Expose via NPort
+      # NPort tunnel
       # ----------------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
@@ -187,7 +183,7 @@ jobs:
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
       # ----------------------------------------------------------------------
-      # 6. Keep alive and save session (inside container)
+      # Keep alive and save session (tar inside container)
       # ----------------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
@@ -209,11 +205,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-data
-          path: ./android-data
+          path: ./android-data/data.tar.gz*  # upload the tar (and .gpg if present)
           retention-days: 90
 
       # ----------------------------------------------------------------------
-      # 7. Cleanup
+      # Cleanup
       # ----------------------------------------------------------------------
       - name: Cleanup
         if: always()

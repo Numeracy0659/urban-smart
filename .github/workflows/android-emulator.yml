@@ -1,4 +1,4 @@
-name: Rooted Android Cloud Phone (Advanced)
+name: Rooted Android Cloud Phone (Final)
 on:
   workflow_dispatch:
     inputs:
@@ -29,6 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ----------------------------------------------------------------------
+      # 1. Restore session (decrypt and extract inside container)
+      # ----------------------------------------------------------------------
       - name: Restore session data
         if: github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -38,14 +41,17 @@ jobs:
         continue-on-error: true
 
       - name: Decrypt session (if encrypted)
-        if: github.event.inputs.encrypt == 'yes'
+        if: github.event.inputs.encrypt == 'yes' && github.event.inputs.persist == 'yes'
         run: |
           if [ -f ./android-data/data.tar.gz.gpg ]; then
-            gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -d ./android-data/data.tar.gz.gpg | tar xz -C ./android-data
+            gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -d ./android-data/data.tar.gz.gpg > ./android-data/data.tar.gz
             rm -f ./android-data/data.tar.gz.gpg
-            echo "✅ Session decrypted"
+            echo "✅ Decrypted"
           fi
 
+      # ----------------------------------------------------------------------
+      # 2. Launch emulator container with volumes
+      # ----------------------------------------------------------------------
       - name: Start Android emulator
         run: |
           mkdir -p ./android-data
@@ -55,6 +61,16 @@ jobs:
             -v $(pwd)/android-data:/home/androidusr \
             -p 5555:5555 \
             shmayro/dockerify-android:latest
+
+      - name: Restore data inside container (if persist)
+        if: github.event.inputs.persist == 'yes' && github.event.inputs.encrypt != 'yes'
+        run: |
+          if [ -f ./android-data/data.tar.gz ]; then
+            docker cp ./android-data/data.tar.gz android-emulator:/tmp/
+            docker exec android-emulator tar xzf /tmp/data.tar.gz -C /data
+            docker exec android-emulator rm -f /tmp/data.tar.gz
+            echo "✅ Restored session"
+          fi
 
       - name: Wait for emulator to boot
         run: |
@@ -80,13 +96,18 @@ jobs:
             sleep 3
           done
 
+      # ----------------------------------------------------------------------
+      # 3. Install & run Frida (as root on emulator)
+      # ----------------------------------------------------------------------
       - name: Install Frida server
         run: |
           SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
           echo "Target: $SERIAL"
-          curl -L -o frida-server.xz \
+          # Download with original name
+          curl -L -o frida-server-17.1.3-android-x86_64.xz \
             https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
-          unxz frida-server.xz
+          unxz frida-server-17.1.3-android-x86_64.xz
+          # Now file is frida-server-17.1.3-android-x86_64
           docker cp frida-server-17.1.3-android-x86_64 android-emulator:/tmp/frida-server
           docker exec android-emulator adb -s $SERIAL push /tmp/frida-server /data/local/tmp/frida-server
           docker exec android-emulator adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
@@ -98,6 +119,9 @@ jobs:
             echo "⚠️ Frida not detected, but continuing..."
           fi
 
+      # ----------------------------------------------------------------------
+      # 4. Launch scrcpy-web container
+      # ----------------------------------------------------------------------
       - name: Start scrcpy-web container
         run: |
           docker run -d --name scrcpy-web \
@@ -125,6 +149,9 @@ jobs:
             sleep 3
           done
 
+      # ----------------------------------------------------------------------
+      # 5. Expose via NPort
+      # ----------------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
         run: |
@@ -159,18 +186,22 @@ jobs:
           echo "  adb forward tcp:27042 tcp:27042"
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
+      # ----------------------------------------------------------------------
+      # 6. Keep alive and save session (inside container)
+      # ----------------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
 
-      - name: Save session
+      - name: Save session (tar from inside container)
         if: always()
         run: |
-          tar czf data.tar.gz -C ./android-data .
+          # Create tar inside container (as root) to avoid permission issues
+          docker exec android-emulator tar czf /tmp/data.tar.gz -C /data .
+          # Copy tar to runner
+          docker cp android-emulator:/tmp/data.tar.gz ./android-data/
           if [ "${{ github.event.inputs.encrypt }}" == "yes" ]; then
-            gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c data.tar.gz
-            mv data.tar.gz.gpg ./android-data/
-          else
-            mv data.tar.gz ./android-data/
+            gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c ./android-data/data.tar.gz
+            rm -f ./android-data/data.tar.gz
           fi
 
       - name: Upload session artifact
@@ -181,6 +212,9 @@ jobs:
           path: ./android-data
           retention-days: 90
 
+      # ----------------------------------------------------------------------
+      # 7. Cleanup
+      # ----------------------------------------------------------------------
       - name: Cleanup
         if: always()
         run: |

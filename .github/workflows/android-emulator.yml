@@ -170,9 +170,9 @@ jobs:
           echo "🔧 Disabling dm-verity to allow system writes..."
           docker exec dockerify-android adb -s $SERIAL shell "disable-verity"
           
-          echo "⏳ Rebooting to apply dm-verity changes using 'adb reboot'..."
-          # Use host-side adb reboot (more reliable)
-          docker exec dockerify-android adb reboot
+          echo "⏳ Rebooting to apply dm-verity changes using 'adb -s $SERIAL reboot'..."
+          # Use explicit serial to avoid multiple device error
+          docker exec dockerify-android adb -s $SERIAL reboot
           
           # Wait for device to come back and boot completely
           echo "⏳ Waiting for device to reconnect after reboot..."
@@ -250,11 +250,11 @@ jobs:
           # Set permissions
           docker exec dockerify-android adb -s $SERIAL shell chmod 644 /system/build.prop
           
-          # Remount as read-only (optional, but safe)
+          # Remount as read-only
           docker exec dockerify-android adb -s $SERIAL shell mount -o ro,remount /
           
-          echo "✅ Pixel 8 Pro profile applied. Rebooting emulator..."
-          docker exec dockerify-android adb reboot
+          echo "✅ Pixel 8 Pro profile applied. Rebooting emulator using explicit serial..."
+          docker exec dockerify-android adb -s $SERIAL reboot
           
           # Wait for reboot
           sleep 30

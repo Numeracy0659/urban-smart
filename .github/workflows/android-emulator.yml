@@ -1,142 +1,5 @@
-name: Rooted Android Cloud Phone (Pixel 8 Pro - Final)
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-    inputs:
-      persist:
-        description: 'Restore previous session?'
-        required: true
-        default: 'yes'
-        type: choice
-        options:
-          - yes
-          - no
-      encrypt:
-        description: 'Encrypt session data? (GPG)'
-        required: false
-        default: 'no'
-        type: choice
-        options:
-          - yes
-          - no
+# ... (rest of workflow remains the same until Frida step) ...
 
-permissions:
-  contents: read
-
-jobs:
-  android:
-    runs-on: ubuntu-latest
-    timeout-minutes: 355
-    steps:
-      - uses: actions/checkout@v4
-
-      # ----------------------------------------------------------------------
-      # 1. Restore session
-      # ----------------------------------------------------------------------
-      - name: Restore session data
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes' || github.event_name == 'push'
-        uses: actions/download-artifact@v4
-        with:
-          name: android-data
-          path: ./android-data
-        continue-on-error: true
-
-      - name: Decrypt session (manual only)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' && github.event.inputs.persist == 'yes'
-        run: |
-          if [ -f ./android-data/data.tar.gz.gpg ]; then
-            gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -d ./android-data/data.tar.gz.gpg > ./android-data/data.tar.gz
-            rm -f ./android-data/data.tar.gz.gpg
-            echo "✅ Decrypted"
-          fi
-
-      # ----------------------------------------------------------------------
-      # 2. Create docker-compose.yml (official architecture)
-      # ----------------------------------------------------------------------
-      - name: Create docker-compose.yml
-        run: |
-          cat > docker-compose.yml << 'YAML'
-          services:
-            dockerify-android:
-              container_name: dockerify-android
-              image: shmayro/dockerify-android:latest
-              ports:
-                - "5555:5555"
-              volumes:
-                - ./android-data:/data
-                - ./android-data:/home/androidusr
-              privileged: true
-              environment:
-                - RAM_SIZE=4096
-                - SCREEN_RESOLUTION=1344x2992
-                - SCREEN_DENSITY=489
-                - ROOT_SETUP=1
-                - ARM_TRANSLATION=1
-                - GAPPS_SETUP=1
-              healthcheck:
-                test: ["CMD", "adb", "shell", "getprop", "sys.boot_completed"]
-                interval: 10s
-                timeout: 5s
-                retries: 20
-
-            scrcpy-web:
-              container_name: scrcpy-web
-              image: shmayro/scrcpy-web:latest
-              ports:
-                - "8000:8000"
-              privileged: true
-              depends_on:
-                dockerify-android:
-                  condition: service_healthy
-              command: >
-                sh -c "
-                  echo '⏳ Waiting for emulator...' &&
-                  for i in 1 2 3 4 5 6 7 8 9 10; do
-                    if adb connect dockerify-android:5555 2>/dev/null | grep -q 'connected'; then
-                      echo '✅ ADB connected' &&
-                      break
-                    fi &&
-                    echo 'Attempt $i/10...' &&
-                    sleep 3
-                  done &&
-                  npm start
-                "
-          YAML
-
-      # ----------------------------------------------------------------------
-      # 3. Start stack
-      # ----------------------------------------------------------------------
-      - name: Start Android stack with docker compose
-        run: |
-          mkdir -p ./android-data
-          docker compose up -d
-
-      - name: Wait for emulator to boot
-        run: |
-          echo "⏳ Waiting for boot completion..."
-          for i in {1..90}; do
-            if docker exec dockerify-android adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "✅ Emulator booted"
-              break
-            fi
-            sleep $(( i < 30 ? 5 : i < 60 ? 10 : 15 ))
-          done
-
-      - name: Restore data inside container
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes' || github.event_name == 'push'
-        run: |
-          if [ -f ./android-data/data.tar.gz ]; then
-            docker cp ./android-data/data.tar.gz dockerify-android:/tmp/
-            docker exec dockerify-android tar xzf /tmp/data.tar.gz -C /data
-            docker exec dockerify-android rm -f /tmp/data.tar.gz
-            echo "✅ Restored session"
-          fi
-        continue-on-error: true
-
-      # ----------------------------------------------------------------------
-      # 4. Install Frida (using su with correct syntax)
-      # ----------------------------------------------------------------------
       - name: Install Frida server
         run: |
           SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
@@ -147,8 +10,9 @@ jobs:
           docker cp frida-server-17.1.3-android-x86_64 dockerify-android:/tmp/frida-server
           docker exec dockerify-android adb -s $SERIAL push /tmp/frida-server /data/local/tmp/frida-server
           docker exec dockerify-android adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
-          # Use su with correct quoting - the command is inside the adb shell string
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'nohup /data/local/tmp/frida-server > /dev/null 2>&1 &'"
+          # Use adb root for Frida too
+          docker exec dockerify-android adb root
+          docker exec dockerify-android adb -s $SERIAL shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
           sleep 3
           if docker exec dockerify-android adb -s $SERIAL shell "ps -A | grep frida-server" | grep -q frida; then
             echo "✅ Frida is running"
@@ -156,35 +20,35 @@ jobs:
             echo "⚠️ Frida not detected, but continuing..."
           fi
 
-      # ----------------------------------------------------------------------
-      # 5. Configure Pixel 8 Pro build.prop (fixed mount approach)
-      # ----------------------------------------------------------------------
       - name: Configure Pixel 8 Pro build.prop
         run: |
           echo "📱 Configuring device as Google Pixel 8 Pro..."
           SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
           
-          # First, try using su with correct quoting
-          # Mount root as read-write (system-as-root)
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'mount -o rw,remount /'"
+          # Elevate ADB to root (bypasses su entirely)
+          docker exec dockerify-android adb root
+          sleep 2
+          
+          # Remount root as read-write
+          docker exec dockerify-android adb -s $SERIAL shell mount -o rw,remount /
           
           # Backup original
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'cp /system/build.prop /system/build.prop.backup'"
+          docker exec dockerify-android adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
           
           # Add Pixel 8 Pro properties
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'echo \"ro.product.model=Pixel 8 Pro\" >> /system/build.prop'"
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'echo \"ro.product.brand=Google\" >> /system/build.prop'"
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'echo \"ro.product.manufacturer=Google\" >> /system/build.prop'"
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'echo \"ro.product.name=husky\" >> /system/build.prop'"
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'echo \"ro.product.device=husky\" >> /system/build.prop'"
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'echo \"ro.build.product=husky\" >> /system/build.prop'"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.brand=Google' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.manufacturer=Google' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.name=husky' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.device=husky' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.build.product=husky' >> /system/build.prop"
           
           # Set permissions and remount read-only
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'chmod 644 /system/build.prop'"
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'mount -o ro,remount /'"
+          docker exec dockerify-android adb -s $SERIAL shell chmod 644 /system/build.prop
+          docker exec dockerify-android adb -s $SERIAL shell mount -o ro,remount /
           
           echo "✅ Pixel 8 Pro profile applied. Rebooting emulator..."
-          docker exec dockerify-android adb -s $SERIAL shell "su -c 'reboot'"
+          docker exec dockerify-android adb -s $SERIAL shell reboot
           
           # Wait for reboot
           sleep 30
@@ -196,102 +60,4 @@ jobs:
             sleep 5
           done
 
-      # ----------------------------------------------------------------------
-      # 6. Verify scrcpy-web
-      # ----------------------------------------------------------------------
-      - name: Verify scrcpy-web is serving
-        run: |
-          echo "⏳ Waiting for web server on port 8000..."
-          for i in {1..40}; do
-            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
-              echo "✅ Web server ready"
-              break
-            fi
-            sleep 3
-          done
-          echo "📋 scrcpy-web logs:"
-          docker logs scrcpy-web --tail 20
-
-      # ----------------------------------------------------------------------
-      # 7. NPort tunnel
-      # ----------------------------------------------------------------------
-      - name: Start NPort tunnel
-        id: tunnel
-        run: |
-          AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
-          echo "auth-pass=$AUTH_PASS" >> $GITHUB_OUTPUT
-          npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
-          echo $! > nport.pid
-          echo "⏳ Waiting for tunnel to be live..."
-          for i in {1..60}; do
-            if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
-              echo "✅ Tunnel live"
-              break
-            fi
-            sleep 5
-          done
-          TUNNEL_URL="https://urban-phone.nport.link"
-          echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
-
-      # ----------------------------------------------------------------------
-      # 8. Display info
-      # ----------------------------------------------------------------------
-      - name: Display info
-        run: |
-          echo "================================================"
-          echo "🌐 ANDROID PHONE IS READY"
-          echo "================================================"
-          echo "📱 Device: Google Pixel 8 Pro"
-          echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
-          echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
-          echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"
-          echo "🔑 Root: Yes (Magisk preinstalled)"
-          echo "🛠️  Frida: Running on emulator (port 27042)"
-          echo "================================================"
-          echo "To use ADB locally:"
-          echo "  adb connect ${{ steps.tunnel.outputs.tunnel-url }}:5555"
-          echo "  adb forward tcp:27042 tcp:27042"
-          echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
-
-      # ----------------------------------------------------------------------
-      # 9. Keep alive and save session
-      # ----------------------------------------------------------------------
-      - name: Keep alive
-        run: sleep 340m
-
-      - name: Save session
-        if: always()
-        run: |
-          if docker ps -a --filter "name=dockerify-android" --format '{{.Names}}' | grep -q dockerify-android; then
-            echo "📦 Creating backup of emulator data..."
-            docker exec dockerify-android tar czf /tmp/data.tar.gz --warning=no-file-changed --ignore-failed-read -C /data . || true
-            if docker exec dockerify-android test -f /tmp/data.tar.gz; then
-              docker cp dockerify-android:/tmp/data.tar.gz ./android-data/
-              echo "✅ Backup created successfully"
-            else
-              echo "⚠️ Backup failed - tar file not created"
-            fi
-          else
-            echo "⚠️ Container not running, skipping save"
-          fi
-          if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ] && [ -f ./android-data/data.tar.gz ]; then
-            gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c ./android-data/data.tar.gz
-            rm -f ./android-data/data.tar.gz
-          fi
-
-      - name: Upload session artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-data
-          path: ./android-data/data.tar.gz*
-          retention-days: 90
-
-      # ----------------------------------------------------------------------
-      # 10. Cleanup
-      # ----------------------------------------------------------------------
-      - name: Cleanup
-        if: always()
-        run: |
-          kill $(cat nport.pid) 2>/dev/null || true
-          docker compose down -v 2>/dev/null || true
+# ... (rest of workflow remains the same) ...

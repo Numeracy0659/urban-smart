@@ -105,17 +105,25 @@ jobs:
           
           echo "✅ Frida server installed and started"
 
-      - name: Verify web interface is ready
+      - name: Start scrcpy-web interface
         run: |
-          echo "⏳ Waiting for web interface on port 8000..."
-          for i in {1..30}; do
+          echo "Starting scrcpy-web on port 8000..."
+          # scrcpy-web is installed in /home/androidusr/bin or similar
+          docker exec -d android-emulator bash -c "cd /home/androidusr && scrcpy-web --port 8000"
+          echo "⏳ Waiting for web server to start..."
+          for i in {1..20}; do
             if docker exec android-emulator curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
-              echo "✅ Web interface ready!"
+              echo "✅ Web server ready!"
               break
             fi
-            echo "⏳ Attempt $i/30..."
-            sleep 5
+            echo "⏳ Attempt $i/20..."
+            sleep 3
           done
+          # If still not ready, print logs
+          if ! docker exec android-emulator curl -s http://localhost:8000 > /dev/null; then
+            echo "⚠️ Web server may not be running. Checking processes..."
+            docker exec android-emulator ps aux | grep scrcpy || true
+          fi
 
       - name: Expose via NPort with authentication
         id: tunnel

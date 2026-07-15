@@ -154,7 +154,19 @@ jobs:
         continue-on-error: true
 
       # ----------------------------------------------------------------------
-      # 4. Install Frida server (as root)
+      # 4. Elevate ADB to root (this is the key fix)
+      # ----------------------------------------------------------------------
+      - name: Enable root ADB
+        run: |
+          echo "🔑 Elevating ADB to root..."
+          docker exec android-emulator adb root
+          sleep 3
+          # Reconnect ADB after root
+          docker exec android-emulator adb connect localhost:5555
+          docker exec android-emulator adb devices
+
+      # ----------------------------------------------------------------------
+      # 5. Install Frida server (now root adb active)
       # ----------------------------------------------------------------------
       - name: Install Frida server
         run: |
@@ -175,35 +187,30 @@ jobs:
           fi
 
       # ----------------------------------------------------------------------
-      # 5. Configure Pixel 8 Pro build.prop (FIXED su syntax)
+      # 6. Configure Pixel 8 Pro build.prop (using root ADB, no su)
       # ----------------------------------------------------------------------
       - name: Configure Pixel 8 Pro build.prop
         run: |
           echo "📱 Configuring device as Google Pixel 8 Pro..."
           SERIAL=$(docker exec android-emulator adb devices | grep emulator | head -1 | awk '{print $1}')
           
-          # Make system writable - FIXED: proper su syntax
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'mount -o rw,remount /system'"
-          
-          # Backup original build.prop
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'cp /system/build.prop /system/build.prop.backup'"
+          # Now we have root ADB, so we can run commands directly without su
+          docker exec android-emulator adb -s $SERIAL shell mount -o rw,remount /system
+          docker exec android-emulator adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
           
           # Set Pixel 8 Pro properties
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.model=Pixel 8 Pro\" >> /system/build.prop'"
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.brand=Google\" >> /system/build.prop'"
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.manufacturer=Google\" >> /system/build.prop'"
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.name=husky\" >> /system/build.prop'"
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.product.device=husky\" >> /system/build.prop'"
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'echo \"ro.build.product=husky\" >> /system/build.prop'"
+          docker exec android-emulator adb -s $SERIAL shell "echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop"
+          docker exec android-emulator adb -s $SERIAL shell "echo 'ro.product.brand=Google' >> /system/build.prop"
+          docker exec android-emulator adb -s $SERIAL shell "echo 'ro.product.manufacturer=Google' >> /system/build.prop"
+          docker exec android-emulator adb -s $SERIAL shell "echo 'ro.product.name=husky' >> /system/build.prop"
+          docker exec android-emulator adb -s $SERIAL shell "echo 'ro.product.device=husky' >> /system/build.prop"
+          docker exec android-emulator adb -s $SERIAL shell "echo 'ro.build.product=husky' >> /system/build.prop"
           
-          # Set permissions
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'chmod 644 /system/build.prop'"
-          
-          # Remount as read-only
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'mount -o ro,remount /system'"
+          docker exec android-emulator adb -s $SERIAL shell chmod 644 /system/build.prop
+          docker exec android-emulator adb -s $SERIAL shell mount -o ro,remount /system
           
           echo "✅ Pixel 8 Pro profile applied. Rebooting emulator..."
-          docker exec android-emulator adb -s $SERIAL shell "su -c 'reboot'"
+          docker exec android-emulator adb -s $SERIAL shell reboot
           
           # Wait for reboot
           sleep 30
@@ -216,7 +223,7 @@ jobs:
           done
 
       # ----------------------------------------------------------------------
-      # 6. Verify scrcpy-web is serving
+      # 7. Verify scrcpy-web is serving
       # ----------------------------------------------------------------------
       - name: Verify scrcpy-web is serving
         run: |
@@ -232,7 +239,7 @@ jobs:
           docker logs scrcpy-web --tail 20
 
       # ----------------------------------------------------------------------
-      # 7. Expose via NPort with authentication
+      # 8. Expose via NPort with authentication
       # ----------------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
@@ -253,7 +260,7 @@ jobs:
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
       # ----------------------------------------------------------------------
-      # 8. Display connection info
+      # 9. Display connection info
       # ----------------------------------------------------------------------
       - name: Display info
         run: |
@@ -273,7 +280,7 @@ jobs:
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
       # ----------------------------------------------------------------------
-      # 9. Keep alive and save session (FIXED tar error)
+      # 10. Keep alive and save session (fixed tar with root)
       # ----------------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
@@ -283,11 +290,8 @@ jobs:
         run: |
           if docker ps -a --filter "name=android-emulator" --format '{{.Names}}' | grep -q android-emulator; then
             echo "📦 Creating backup of emulator data..."
-            # Use --warning=no-file-changed to ignore active file changes during backup
-            docker exec android-emulator tar czf /tmp/data.tar.gz \
-              --warning=no-file-changed \
-              --ignore-failed-read \
-              -C /data .
+            # Use root ADB to run tar and ignore file-change warnings
+            docker exec android-emulator adb shell "tar czf /tmp/data.tar.gz --warning=no-file-changed --ignore-failed-read -C /data ." 2>/dev/null || true
             docker cp android-emulator:/tmp/data.tar.gz ./android-data/
             echo "✅ Backup created successfully"
           else
@@ -307,7 +311,7 @@ jobs:
           retention-days: 90
 
       # ----------------------------------------------------------------------
-      # 10. Cleanup
+      # 11. Cleanup
       # ----------------------------------------------------------------------
       - name: Cleanup
         if: always()

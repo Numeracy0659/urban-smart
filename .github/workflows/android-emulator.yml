@@ -157,15 +157,15 @@ jobs:
         continue-on-error: true
 
       # ----------------------------------------------------------------------
-      # 5. Disable dm-verity and make system writable (FIXED: disconnect duplicate)
+      # 5. Disable dm-verity and remount system (NO duplicate connections)
       # ----------------------------------------------------------------------
       - name: Disable dm-verity and remount system
         run: |
           echo "🔑 Elevating ADB to root..."
           docker exec dockerify-android adb root
           sleep 3
-          docker exec dockerify-android adb connect localhost:5555
           
+          # Get serial from the container's ADB (emulator-5554)
           SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
           echo "Target: $SERIAL"
           
@@ -173,19 +173,15 @@ jobs:
           docker exec dockerify-android adb -s $SERIAL shell "disable-verity"
           
           echo "⏳ Rebooting to apply dm-verity changes..."
-          # CRITICAL: Disconnect the duplicate device to avoid "more than one device" error
-          docker exec dockerify-android adb disconnect localhost:5555
           docker exec dockerify-android adb -s $SERIAL reboot
           
           echo "⏳ Waiting for device to reconnect after reboot..."
           sleep 10
-          # Reconnect (now only one device is registered)
-          docker exec dockerify-android adb connect localhost:5555
-          docker exec dockerify-android adb wait-for-device
+          docker exec dockerify-android adb -s $SERIAL wait-for-device
           
           # Wait for boot completion
           for i in {1..60}; do
-            if docker exec dockerify-android adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+            if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
               echo "✅ Device rebooted successfully"
               break
             fi
@@ -195,8 +191,6 @@ jobs:
           # Re-root after reboot
           docker exec dockerify-android adb root
           sleep 3
-          docker exec dockerify-android adb connect localhost:5555
-          SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
           
           # Remount system as writable
           echo "🔧 Remounting system as writable..."
@@ -258,14 +252,13 @@ jobs:
           docker exec dockerify-android adb -s $SERIAL shell mount -o ro,remount /
           
           echo "✅ Pixel 8 Pro profile applied. Rebooting emulator..."
-          docker exec dockerify-android adb disconnect localhost:5555
           docker exec dockerify-android adb -s $SERIAL reboot
           
           # Wait for reboot
           sleep 30
-          docker exec dockerify-android adb connect localhost:5555
+          docker exec dockerify-android adb -s $SERIAL wait-for-device
           for i in {1..60}; do
-            if docker exec dockerify-android adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+            if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
               echo "✅ Emulator rebooted with Pixel 8 Pro profile"
               break
             fi

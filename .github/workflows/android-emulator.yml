@@ -157,7 +157,7 @@ jobs:
         continue-on-error: true
 
       # ----------------------------------------------------------------------
-      # 5. Disable dm-verity and remount system (NO duplicate connections)
+      # 5. Disable dm-verity and remount system (no wait-for-device)
       # ----------------------------------------------------------------------
       - name: Disable dm-verity and remount system
         run: |
@@ -165,7 +165,6 @@ jobs:
           docker exec dockerify-android adb root
           sleep 3
           
-          # Get serial from the container's ADB (emulator-5554)
           SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
           echo "Target: $SERIAL"
           
@@ -176,14 +175,15 @@ jobs:
           docker exec dockerify-android adb -s $SERIAL reboot
           
           echo "⏳ Waiting for device to reconnect after reboot..."
-          sleep 10
-          docker exec dockerify-android adb -s $SERIAL wait-for-device
-          
-          # Wait for boot completion
-          for i in {1..60}; do
-            if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "✅ Device rebooted successfully"
-              break
+          # Poll for device presence and boot completion
+          for i in {1..120}; do
+            # Check if device is present
+            if docker exec dockerify-android adb devices | grep -q "$SERIAL"; then
+              # Check if boot completed
+              if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+                echo "✅ Device rebooted successfully"
+                break
+              fi
             fi
             sleep 5
           done
@@ -254,13 +254,14 @@ jobs:
           echo "✅ Pixel 8 Pro profile applied. Rebooting emulator..."
           docker exec dockerify-android adb -s $SERIAL reboot
           
-          # Wait for reboot
-          sleep 30
-          docker exec dockerify-android adb -s $SERIAL wait-for-device
-          for i in {1..60}; do
-            if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "✅ Emulator rebooted with Pixel 8 Pro profile"
-              break
+          # Wait for reboot using polling
+          echo "⏳ Waiting for emulator to reboot with new profile..."
+          for i in {1..120}; do
+            if docker exec dockerify-android adb devices | grep -q "$SERIAL"; then
+              if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+                echo "✅ Emulator rebooted with Pixel 8 Pro profile"
+                break
+              fi
             fi
             sleep 5
           done

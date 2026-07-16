@@ -132,7 +132,7 @@ jobs:
           done
 
       # ----------------------------------------------------------------------
-      # 4. Restore data inside container (if persist)
+      # 4. Restore data inside container
       # ----------------------------------------------------------------------
       - name: Restore data inside container (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -157,11 +157,11 @@ jobs:
         continue-on-error: true
 
       # ----------------------------------------------------------------------
-      # 5. Configure Pixel 8 Pro build.prop
+      # 5. Enable writable system (Official Android sequence)
       # ----------------------------------------------------------------------
-      - name: Configure Pixel 8 Pro build.prop
+      - name: Enable writable system
         run: |
-          echo "📱 Configuring device as Google Pixel 8 Pro..."
+          echo "🔧 Enabling writable system partition (official Android sequence)..."
           
           # Elevate ADB to root
           docker exec dockerify-android adb root
@@ -170,18 +170,59 @@ jobs:
           SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
           echo "Target: $SERIAL"
           
-          # Remount system as writable
-          echo "🔧 Remounting system as writable..."
+          # Step 1: Disable verity (if not already done by ROOT_SETUP)
+          echo "📌 Step 1: Disabling verity..."
+          docker exec dockerify-android adb -s $SERIAL disable-verity || echo "Verity may already be disabled"
+          
+          # Step 2: Reboot to apply verity changes
+          echo "📌 Step 2: Rebooting to apply verity changes..."
+          docker exec dockerify-android adb -s $SERIAL reboot
+          
+          # Step 3: Wait for device
+          echo "📌 Step 3: Waiting for device to come back..."
+          sleep 15
+          docker exec dockerify-android adb -s $SERIAL wait-for-device
+          
+          # Step 4: Re-root after reboot
+          docker exec dockerify-android adb root
+          sleep 3
+          
+          # Step 5: Remount system as writable (this enables the overlay)
+          echo "📌 Step 4: Running adb remount..."
           docker exec dockerify-android adb -s $SERIAL remount
           
-          # Verify writability
+          # Step 6: REBOOT AGAIN - this is the critical step that makes the overlay active
+          echo "📌 Step 5: Rebooting to activate overlay (CRITICAL)..."
+          docker exec dockerify-android adb -s $SERIAL reboot
+          
+          # Step 7: Wait for device to come back
+          echo "📌 Step 6: Waiting for device to come back..."
+          sleep 15
+          docker exec dockerify-android adb -s $SERIAL wait-for-device
+          
+          # Step 8: Re-root after reboot
+          docker exec dockerify-android adb root
+          sleep 3
+          
+          # Step 9: Verify system is now writable
+          echo "📌 Step 7: Verifying system is writable..."
           if docker exec dockerify-android adb -s $SERIAL shell "touch /system/test_write 2>/dev/null" ; then
             docker exec dockerify-android adb -s $SERIAL shell "rm /system/test_write"
-            echo "✅ System partition is writable"
+            echo "✅ System partition is now writable!"
           else
             echo "❌ System partition is still read-only. Exiting."
             exit 1
           fi
+
+      # ----------------------------------------------------------------------
+      # 6. Configure Pixel 8 Pro build.prop
+      # ----------------------------------------------------------------------
+      - name: Configure Pixel 8 Pro build.prop
+        run: |
+          echo "📱 Configuring device as Google Pixel 8 Pro..."
+          
+          SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
+          echo "Target: $SERIAL"
           
           # Backup original
           docker exec dockerify-android adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
@@ -197,15 +238,13 @@ jobs:
           # Set permissions
           docker exec dockerify-android adb -s $SERIAL shell chmod 644 /system/build.prop
           
-          # Remount as read-only to maintain system integrity
+          # Remount as read-only
           docker exec dockerify-android adb -s $SERIAL shell mount -o ro,remount /
           
           echo "✅ Pixel 8 Pro profile applied."
-          echo "⚠️  IMPORTANT: Do NOT reboot the emulator after this."
-          echo "   The changes are active and will persist in the container session."
 
       # ----------------------------------------------------------------------
-      # 6. Install Frida server
+      # 7. Install Frida server
       # ----------------------------------------------------------------------
       - name: Install Frida server
         run: |
@@ -226,7 +265,7 @@ jobs:
           fi
 
       # ----------------------------------------------------------------------
-      # 7. Verify scrcpy-web
+      # 8. Verify scrcpy-web
       # ----------------------------------------------------------------------
       - name: Verify scrcpy-web is serving
         run: |
@@ -242,7 +281,7 @@ jobs:
           docker logs scrcpy-web --tail 20
 
       # ----------------------------------------------------------------------
-      # 8. NPort tunnel
+      # 9. NPort tunnel
       # ----------------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
@@ -263,7 +302,7 @@ jobs:
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
       # ----------------------------------------------------------------------
-      # 9. Display info
+      # 10. Display info
       # ----------------------------------------------------------------------
       - name: Display info
         run: |
@@ -283,7 +322,7 @@ jobs:
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
       # ----------------------------------------------------------------------
-      # 10. Keep alive and save session
+      # 11. Keep alive and save session
       # ----------------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
@@ -317,7 +356,7 @@ jobs:
           retention-days: 90
 
       # ----------------------------------------------------------------------
-      # 11. Cleanup
+      # 12. Cleanup
       # ----------------------------------------------------------------------
       - name: Cleanup
         if: always()

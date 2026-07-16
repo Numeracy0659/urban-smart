@@ -120,19 +120,19 @@ jobs:
           mkdir -p ./android-data
           docker compose up -d
 
-      - name: Wait for emulator to boot
+      - name: Wait for emulator to boot and ROOT_SETUP to complete
         run: |
-          echo "⏳ Waiting for boot completion..."
-          for i in {1..90}; do
+          echo "⏳ Waiting for boot and ROOT_SETUP completion..."
+          for i in {1..120}; do
             if docker exec dockerify-android adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "✅ Emulator booted"
+              echo "✅ Emulator booted and ROOT_SETUP complete"
               break
             fi
             sleep $(( i < 30 ? 5 : i < 60 ? 10 : 15 ))
           done
 
       # ----------------------------------------------------------------------
-      # 4. Restore data inside container
+      # 4. Restore data inside container (if persist)
       # ----------------------------------------------------------------------
       - name: Restore data inside container (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -157,54 +157,65 @@ jobs:
         continue-on-error: true
 
       # ----------------------------------------------------------------------
-      # 5. Disable dm-verity and remount system (robust polling)
+      # 5. Configure Pixel 8 Pro build.prop
       # ----------------------------------------------------------------------
-      - name: Disable dm-verity and remount system
+      - name: Configure Pixel 8 Pro build.prop
         run: |
-          echo "🔑 Elevating ADB to root..."
+          echo "📱 Configuring device as Google Pixel 8 Pro..."
+          
+          # Elevate ADB to root (ROOT_SETUP already did this, but ensure it)
           docker exec dockerify-android adb root
           sleep 3
           
           SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
           echo "Target: $SERIAL"
           
-          echo "🔧 Disabling dm-verity to allow system writes..."
-          docker exec dockerify-android adb -s $SERIAL shell "disable-verity"
-          
-          echo "⏳ Rebooting to apply dm-verity changes..."
-          docker exec dockerify-android adb -s $SERIAL reboot
-          
-          echo "⏳ Waiting for device to reconnect after reboot..."
-          # Robust polling: check device state via `adb devices` before running shell commands
-          for i in {1..120}; do
-            # Check if device is present and in 'device' state
-            STATE=$(docker exec dockerify-android adb devices | grep -E "^$SERIAL\s+device" | awk '{print $2}')
-            if [ "$STATE" = "device" ]; then
-              # Device is online, now check boot completion
-              if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-                echo "✅ Device rebooted successfully"
-                break
-              fi
-            fi
-            sleep 5
-          done
-          
-          # Re-root after reboot
-          docker exec dockerify-android adb root
-          sleep 3
-          
-          # Remount system as writable
+          # Remount system as writable (ROOT_SETUP disabled verity, so this should work)
           echo "🔧 Remounting system as writable..."
           docker exec dockerify-android adb -s $SERIAL remount
           
           # Verify writability
           if docker exec dockerify-android adb -s $SERIAL shell "touch /system/test_write 2>/dev/null" ; then
             docker exec dockerify-android adb -s $SERIAL shell "rm /system/test_write"
-            echo "✅ System partition is now writable"
+            echo "✅ System partition is writable"
           else
             echo "❌ System partition is still read-only. Exiting."
             exit 1
           fi
+          
+          # Backup original
+          docker exec dockerify-android adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
+          
+          # Set Pixel 8 Pro properties
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.brand=Google' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.manufacturer=Google' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.name=husky' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.device=husky' >> /system/build.prop"
+          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.build.product=husky' >> /system/build.prop"
+          
+          # Set permissions
+          docker exec dockerify-android adb -s $SERIAL shell chmod 644 /system/build.prop
+          
+          # Remount as read-only
+          docker exec dockerify-android adb -s $SERIAL shell mount -o ro,remount /
+          
+          echo "✅ Pixel 8 Pro profile applied. Rebooting emulator once..."
+          docker exec dockerify-android adb -s $SERIAL reboot
+          
+          # Use adb wait-for-device to avoid get-state errors
+          echo "⏳ Waiting for device to come back online..."
+          docker exec dockerify-android adb -s $SERIAL wait-for-device
+          
+          # Wait for boot completion
+          echo "⏳ Waiting for boot completion..."
+          for i in {1..60}; do
+            if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+              echo "✅ Emulator rebooted with Pixel 8 Pro profile"
+              break
+            fi
+            sleep 5
+          done
 
       # ----------------------------------------------------------------------
       # 6. Install Frida server
@@ -228,48 +239,7 @@ jobs:
           fi
 
       # ----------------------------------------------------------------------
-      # 7. Configure Pixel 8 Pro build.prop
-      # ----------------------------------------------------------------------
-      - name: Configure Pixel 8 Pro build.prop
-        run: |
-          echo "📱 Configuring device as Google Pixel 8 Pro..."
-          SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
-          
-          # Backup original
-          docker exec dockerify-android adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
-          
-          # Set Pixel 8 Pro properties
-          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop"
-          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.brand=Google' >> /system/build.prop"
-          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.manufacturer=Google' >> /system/build.prop"
-          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.name=husky' >> /system/build.prop"
-          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.product.device=husky' >> /system/build.prop"
-          docker exec dockerify-android adb -s $SERIAL shell "echo 'ro.build.product=husky' >> /system/build.prop"
-          
-          # Set permissions
-          docker exec dockerify-android adb -s $SERIAL shell chmod 644 /system/build.prop
-          
-          # Remount as read-only
-          docker exec dockerify-android adb -s $SERIAL shell mount -o ro,remount /
-          
-          echo "✅ Pixel 8 Pro profile applied. Rebooting emulator..."
-          docker exec dockerify-android adb -s $SERIAL reboot
-          
-          # Wait for reboot using the same robust polling
-          echo "⏳ Waiting for emulator to reboot with new profile..."
-          for i in {1..120}; do
-            STATE=$(docker exec dockerify-android adb devices | grep -E "^$SERIAL\s+device" | awk '{print $2}')
-            if [ "$STATE" = "device" ]; then
-              if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-                echo "✅ Emulator rebooted with Pixel 8 Pro profile"
-                break
-              fi
-            fi
-            sleep 5
-          done
-
-      # ----------------------------------------------------------------------
-      # 8. Verify scrcpy-web
+      # 7. Verify scrcpy-web
       # ----------------------------------------------------------------------
       - name: Verify scrcpy-web is serving
         run: |
@@ -285,7 +255,7 @@ jobs:
           docker logs scrcpy-web --tail 20
 
       # ----------------------------------------------------------------------
-      # 9. NPort tunnel
+      # 8. NPort tunnel
       # ----------------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
@@ -306,7 +276,7 @@ jobs:
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
       # ----------------------------------------------------------------------
-      # 10. Display info
+      # 9. Display info
       # ----------------------------------------------------------------------
       - name: Display info
         run: |
@@ -317,7 +287,7 @@ jobs:
           echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
           echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
           echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"
-          echo "🔑 Root: Yes (Magisk, dm-verity disabled)"
+          echo "🔑 Root: Yes (Magisk, ROOT_SETUP completed)"
           echo "🛠️  Frida: Running on emulator (port 27042)"
           echo "================================================"
           echo "To use ADB locally:"
@@ -326,7 +296,7 @@ jobs:
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
       # ----------------------------------------------------------------------
-      # 11. Keep alive and save session
+      # 10. Keep alive and save session
       # ----------------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
@@ -360,7 +330,7 @@ jobs:
           retention-days: 90
 
       # ----------------------------------------------------------------------
-      # 12. Cleanup
+      # 11. Cleanup
       # ----------------------------------------------------------------------
       - name: Cleanup
         if: always()

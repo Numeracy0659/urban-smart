@@ -100,6 +100,7 @@ jobs:
 
       # ============================================================
       # PHASE 5: ANDROID EMULATOR (Hardware Accelerated)
+      # FIXED: Use Nexus 5X profile instead of Pixel 6
       # ============================================================
       - name: Start Android emulator
         id: emulator
@@ -108,12 +109,12 @@ jobs:
           api-level: 33
           target: google_apis
           arch: x86_64
-          profile: Pixel 6
+          profile: Nexus 5X
           ram-size: 4096
           disk-size: 4096M
           force-avd-creation: false
-          disable-linux-hw-accel: false   # use KVM if available
-          emulator-boot-timeout: 600      # 10 minutes timeout
+          disable-linux-hw-accel: false
+          emulator-boot-timeout: 600
           emulator-options: >-
             -no-snapshot-load
             -no-snapshot-save
@@ -333,7 +334,7 @@ jobs:
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
-          echo "📱 Device: Google Pixel 8 Pro"
+          echo "📱 Device: Google Pixel 8 Pro (spoofed)"
           echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
           echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
           echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"

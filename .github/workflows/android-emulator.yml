@@ -112,7 +112,8 @@ jobs:
           ram-size: 4096
           disk-size: 4096M
           force-avd-creation: false
-          enable-debug: true
+          disable-linux-hw-accel: false   # use KVM if available
+          emulator-boot-timeout: 600      # 10 minutes timeout
           emulator-options: >-
             -no-snapshot-load
             -no-snapshot-save

@@ -28,34 +28,33 @@ jobs:
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 355
+
     steps:
       - uses: actions/checkout@v4
 
-      # ======================================================================
-      # PHASE 1: ENVIRONMENT SETUP (Research-Backed)
-      # ======================================================================
-
-      # 1.1 Enable KVM hardware acceleration on GitHub 2-vCPU runner
-      # Source: https://github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available
-      # Source: https://github.com/ReactiveCircus/android-emulator-runner
+      # ============================================================
+      # PHASE 1: KVM HARDWARE ACCELERATION
+      # Source: GitHub Changelog - Hardware accelerated Android
+      # virtualization now available (April 2, 2024)[reference:5]
+      # ============================================================
       - name: Enable KVM group permissions
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # 1.2 Install ADB on runner (bypasses container ADB instability)
-      # ADB in container after reboot causes "device offline" errors
-      # Using host ADB with explicit serial eliminates this
-      - name: Install ADB tools
+      # ============================================================
+      # PHASE 2: HOST ADB INSTALLATION
+      # Reason: Bypasses container ADB instability after reboot
+      # ============================================================
+      - name: Install ADB tools on host
         run: |
           sudo apt-get update
           sudo apt-get install -y android-tools-adb
 
-      # ======================================================================
-      # PHASE 2: SESSION RESTORATION (Persistence)
-      # ======================================================================
-
+      # ============================================================
+      # PHASE 3: SESSION RESTORATION
+      # ============================================================
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -81,27 +80,27 @@ jobs:
             echo "✅ Decrypted"
           fi
 
-      # ======================================================================
-      # PHASE 3: ANDROID EMULATOR (Research-Backed Orchestration)
-      # ======================================================================
-
-      # 3.1 Cache AVD snapshot for faster startup
-      # Source: ReactiveCircus/android-emulator-runner README
+      # ============================================================
+      # PHASE 4: AVD CACHE
+      # Source: ReactiveCircus/android-emulator-runner docs[reference:6]
+      # ============================================================
       - name: Cache AVD snapshot
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         id: avd-cache
         with:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ runner.os }}-api33-x86_64
+          key: avd-${{ runner.os }}-api33-x86_64-google_apis
           restore-keys: |
-            avd-${{ runner.os }}-api33-x86_64
+            avd-${{ runner.os }}-api33-x86_64-
 
-      # 3.2 Start emulator with hardware acceleration
-      # Source: https://github.com/ReactiveCircus/android-emulator-runner
-      # GPU acceleration: -gpu swiftshader_indirect for headless CI
-      - name: Start Android emulator with hardware acceleration
+      # ============================================================
+      # PHASE 5: ANDROID EMULATOR (Hardware Accelerated)
+      # Source: ReactiveCircus/android-emulator-runner README[reference:7]
+      # GPU: swiftshader_indirect for headless CI[reference:8]
+      # ============================================================
+      - name: Start Android emulator
         id: emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -110,17 +109,27 @@ jobs:
           arch: x86_64
           profile: Pixel 6
           force-avd-creation: false
-          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-options: >-
+            -no-snapshot-load
+            -no-snapshot-save
+            -no-window
+            -gpu swiftshader_indirect
+            -noaudio
+            -no-boot-anim
+            -camera-back none
+            -camera-front none
           disable-animations: true
-          script: echo "Emulator ready"
+          script: echo "Emulator is ready"
 
-      # 3.3 Wait for emulator to be fully ready
-      # Using host ADB with retry logic for reliability
-      - name: Wait for emulator (with retry)
+      # ============================================================
+      # PHASE 6: WAIT FOR BOOT COMPLETION (With Retry)
+      # Source: nick-fields/retry for flaky commands[reference:9]
+      # ============================================================
+      - name: Wait for emulator boot completion
         uses: nick-fields/retry@v2
         with:
           timeout_minutes: 5
-          max_attempts: 3
+          max_attempts: 5
           retry_on: error
           command: |
             SERIAL="emulator-5554"
@@ -135,87 +144,94 @@ jobs:
             echo "❌ Emulator failed to boot"
             exit 1
 
-      # ======================================================================
-      # PHASE 4: SYSTEM WRITABLE (Research-Backed Android Sequence)
-      # ======================================================================
-
-      # 4.1 Enable writable system using official Android sequence
-      # Source: Android OverlayFS documentation
-      # Sequence: disable-verity → reboot → remount → su mount
+      # ============================================================
+      # PHASE 7: ENABLE WRITABLE SYSTEM
+      # Source: Android OverlayFS documentation[reference:10]
+      # Sequence: adb root → disable-verity → reboot → wait-for-device
+      # → adb root → adb remount → su mount
+      # ============================================================
       - name: Enable writable system (Official Android Sequence)
         run: |
           echo "🔧 Enabling writable system using official Android sequence..."
-          
+
           SERIAL="emulator-5554"
           echo "Target: $SERIAL"
-          
-          # Step 1: Elevate ADB to root
+
+          # Step 1: adb root
           echo "📌 Step 1: Elevating ADB to root..."
           adb -s $SERIAL root
           sleep 3
-          
-          # Step 2: Disable verity
+
+          # Step 2: adb disable-verity
           echo "📌 Step 2: Disabling verity..."
           adb -s $SERIAL disable-verity || echo "Verity may already be disabled"
-          
-          # Step 3: Reboot to apply verity changes
+
+          # Step 3: adb reboot
           echo "📌 Step 3: Rebooting to apply verity changes..."
           adb -s $SERIAL reboot
-          
-          # Step 4: Wait for device after reboot
+
+          # Step 4: adb wait-for-device (with recovery)
           echo "📌 Step 4: Waiting for device to come back..."
           sleep 15
           adb kill-server
           adb start-server
           sleep 3
-          adb connect localhost:5555
-          
-          # Wait for device to be ready
+
+          for i in {1..30}; do
+            if adb devices | grep -q "emulator-5554.*device"; then
+              echo "✅ Device reconnected"
+              break
+            fi
+            sleep 3
+          done
+
+          adb -s $SERIAL wait-for-device
+
+          # Wait for boot completion after reboot
           for i in {1..60}; do
-            if adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+            if adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
               echo "✅ Device booted"
               break
             fi
             sleep 5
           done
-          
-          # Step 5: Root again after reboot
+
+          # Step 5: adb root again
           echo "📌 Step 5: Re-establishing root..."
-          adb -s localhost:5555 root
+          adb -s $SERIAL root
           sleep 3
-          
-          # Step 6: Remount with overlay
+
+          # Step 6: adb remount
           echo "📌 Step 6: Running adb remount..."
-          adb -s localhost:5555 remount
-          
-          # Step 7: Direct su mount (activates overlay immediately)
+          adb -s $SERIAL remount
+
+          # Step 7: su mount (activates overlay immediately)
           echo "📌 Step 7: Direct su mount to activate overlay..."
-          adb -s localhost:5555 shell "su 0 mount -o rw,remount /system"
-          
+          adb -s $SERIAL shell "su 0 mount -o rw,remount /system"
+
           # Step 8: Verify writability
           echo "📌 Step 8: Verifying system is writable..."
-          if adb -s localhost:5555 shell "touch /system/test_write 2>/dev/null" ; then
-            adb -s localhost:5555 shell "rm /system/test_write"
+          if adb -s $SERIAL shell "touch /system/test_write 2>/dev/null"; then
+            adb -s $SERIAL shell "rm /system/test_write"
             echo "✅ System partition is now writable!"
           else
             echo "❌ System partition is still read-only. Exiting."
             exit 1
           fi
 
-      # ======================================================================
-      # PHASE 5: DEVICE SPOOFING (Pixel 8 Pro)
-      # ======================================================================
-
+      # ============================================================
+      # PHASE 8: CONFIGURE PIXEL 8 PRO build.prop
+      # ============================================================
       - name: Configure Pixel 8 Pro build.prop
         run: |
           echo "📱 Configuring device as Google Pixel 8 Pro..."
-          
-          SERIAL="localhost:5555"
+
+          SERIAL="emulator-5554"
           echo "Target: $SERIAL"
-          
+
           # Backup original
           adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
-          
+
           # Set Pixel 8 Pro properties using su 0
           adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop\""
           adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.brand=Google' >> /system/build.prop\""
@@ -223,29 +239,28 @@ jobs:
           adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.name=husky' >> /system/build.prop\""
           adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.device=husky' >> /system/build.prop\""
           adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.build.product=husky' >> /system/build.prop\""
-          
+
           # Set permissions
           adb -s $SERIAL shell chmod 644 /system/build.prop
-          
+
           echo "✅ Pixel 8 Pro profile applied."
 
-      # ======================================================================
-      # PHASE 6: FRIDA SERVER
-      # ======================================================================
-
+      # ============================================================
+      # PHASE 9: INSTALL FRIDA SERVER
+      # ============================================================
       - name: Install Frida server
         run: |
-          SERIAL="localhost:5555"
+          SERIAL="emulator-5554"
           echo "Target: $SERIAL"
-          
+
           curl -L -o frida-server-17.1.3-android-x86_64.xz \
             https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
           unxz frida-server-17.1.3-android-x86_64.xz
-          
+
           adb -s $SERIAL push frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
           adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
           adb -s $SERIAL shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
-          
+
           sleep 3
           if adb -s $SERIAL shell "ps -A | grep frida-server" | grep -q frida; then
             echo "✅ Frida is running"
@@ -253,10 +268,10 @@ jobs:
             echo "⚠️ Frida not detected, but continuing..."
           fi
 
-      # ======================================================================
-      # PHASE 7: SCRCPY-WEB CONTAINER
-      # ======================================================================
-
+      # ============================================================
+      # PHASE 10: SCRCPY-WEB CONTAINER
+      # Note: Uses host.docker.internal to reach host's ADB port 5555
+      # ============================================================
       - name: Start scrcpy-web container
         run: |
           docker run -d --name scrcpy-web \
@@ -286,10 +301,9 @@ jobs:
           echo "📋 scrcpy-web logs:"
           docker logs scrcpy-web --tail 20
 
-      # ======================================================================
-      # PHASE 8: NPORT TUNNEL
-      # ======================================================================
-
+      # ============================================================
+      # PHASE 11: NPORT TUNNEL
+      # ============================================================
       - name: Start NPort tunnel
         id: tunnel
         run: |
@@ -297,7 +311,7 @@ jobs:
           echo "auth-pass=$AUTH_PASS" >> $GITHUB_OUTPUT
           npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
           echo $! > nport.pid
-          
+
           echo "⏳ Waiting for tunnel to be live..."
           for i in {1..60}; do
             if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
@@ -309,10 +323,9 @@ jobs:
           TUNNEL_URL="https://urban-phone.nport.link"
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
-      # ======================================================================
-      # PHASE 9: DEPLOYMENT INFO
-      # ======================================================================
-
+      # ============================================================
+      # PHASE 12: DEPLOYMENT INFO
+      # ============================================================
       - name: Display info
         run: |
           echo "================================================"
@@ -330,10 +343,9 @@ jobs:
           echo "  adb forward tcp:27042 tcp:27042"
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
-      # ======================================================================
-      # PHASE 10: KEEP ALIVE & SESSION PERSISTENCE
-      # ======================================================================
-
+      # ============================================================
+      # PHASE 13: KEEP ALIVE & SESSION PERSISTENCE
+      # ============================================================
       - name: Keep alive
         run: sleep 340m
 
@@ -365,12 +377,12 @@ jobs:
           path: ./android-data/data.tar.gz*
           retention-days: 90
 
-      # ======================================================================
-      # PHASE 11: CLEANUP
-      # ======================================================================
-
+      # ============================================================
+      # PHASE 14: CLEANUP
+      # ============================================================
       - name: Cleanup
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
           docker compose down -v 2>/dev/null || true
+          docker rm -f scrcpy-web 2>/dev/null || true

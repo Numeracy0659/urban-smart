@@ -163,14 +163,14 @@ jobs:
         run: |
           echo "📱 Configuring device as Google Pixel 8 Pro..."
           
-          # Elevate ADB to root (ROOT_SETUP already did this, but ensure it)
+          # Elevate ADB to root
           docker exec dockerify-android adb root
           sleep 3
           
           SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
           echo "Target: $SERIAL"
           
-          # Remount system as writable (ROOT_SETUP disabled verity, so this should work)
+          # Remount system as writable
           echo "🔧 Remounting system as writable..."
           docker exec dockerify-android adb -s $SERIAL remount
           
@@ -197,25 +197,12 @@ jobs:
           # Set permissions
           docker exec dockerify-android adb -s $SERIAL shell chmod 644 /system/build.prop
           
-          # Remount as read-only
+          # Remount as read-only to maintain system integrity
           docker exec dockerify-android adb -s $SERIAL shell mount -o ro,remount /
           
-          echo "✅ Pixel 8 Pro profile applied. Rebooting emulator once..."
-          docker exec dockerify-android adb -s $SERIAL reboot
-          
-          # Use adb wait-for-device to avoid get-state errors
-          echo "⏳ Waiting for device to come back online..."
-          docker exec dockerify-android adb -s $SERIAL wait-for-device
-          
-          # Wait for boot completion
-          echo "⏳ Waiting for boot completion..."
-          for i in {1..60}; do
-            if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "✅ Emulator rebooted with Pixel 8 Pro profile"
-              break
-            fi
-            sleep 5
-          done
+          echo "✅ Pixel 8 Pro profile applied."
+          echo "⚠️  IMPORTANT: Do NOT reboot the emulator after this."
+          echo "   The changes are active and will persist in the container session."
 
       # ----------------------------------------------------------------------
       # 6. Install Frida server

@@ -34,8 +34,6 @@ jobs:
 
       # ============================================================
       # PHASE 1: KVM HARDWARE ACCELERATION
-      # Source: GitHub Changelog - Hardware accelerated Android
-      # virtualization now available (April 2, 2024)[reference:5]
       # ============================================================
       - name: Enable KVM group permissions
         run: |
@@ -43,9 +41,15 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Verify KVM
+        run: |
+          ls -l /dev/kvm
+          sudo apt-get update
+          sudo apt-get install -y cpu-checker
+          kvm-ok
+
       # ============================================================
-      # PHASE 2: HOST ADB INSTALLATION
-      # Reason: Bypasses container ADB instability after reboot
+      # PHASE 2: INSTALL HOST ADB
       # ============================================================
       - name: Install ADB tools on host
         run: |
@@ -82,7 +86,6 @@ jobs:
 
       # ============================================================
       # PHASE 4: AVD CACHE
-      # Source: ReactiveCircus/android-emulator-runner docs[reference:6]
       # ============================================================
       - name: Cache AVD snapshot
         uses: actions/cache@v4
@@ -97,8 +100,6 @@ jobs:
 
       # ============================================================
       # PHASE 5: ANDROID EMULATOR (Hardware Accelerated)
-      # Source: ReactiveCircus/android-emulator-runner README[reference:7]
-      # GPU: swiftshader_indirect for headless CI[reference:8]
       # ============================================================
       - name: Start Android emulator
         id: emulator
@@ -108,7 +109,10 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: Pixel 6
+          ram-size: 4096
+          disk-size: 4096M
           force-avd-creation: false
+          enable-debug: true
           emulator-options: >-
             -no-snapshot-load
             -no-snapshot-save
@@ -118,12 +122,13 @@ jobs:
             -no-boot-anim
             -camera-back none
             -camera-front none
+            -memory 4096
+            -cores 4
           disable-animations: true
           script: echo "Emulator is ready"
 
       # ============================================================
       # PHASE 6: WAIT FOR BOOT COMPLETION (With Retry)
-      # Source: nick-fields/retry for flaky commands[reference:9]
       # ============================================================
       - name: Wait for emulator boot completion
         uses: nick-fields/retry@v2
@@ -145,10 +150,7 @@ jobs:
             exit 1
 
       # ============================================================
-      # PHASE 7: ENABLE WRITABLE SYSTEM
-      # Source: Android OverlayFS documentation[reference:10]
-      # Sequence: adb root → disable-verity → reboot → wait-for-device
-      # → adb root → adb remount → su mount
+      # PHASE 7: ENABLE WRITABLE SYSTEM (Official Android Sequence)
       # ============================================================
       - name: Enable writable system (Official Android Sequence)
         run: |
@@ -270,7 +272,6 @@ jobs:
 
       # ============================================================
       # PHASE 10: SCRCPY-WEB CONTAINER
-      # Note: Uses host.docker.internal to reach host's ADB port 5555
       # ============================================================
       - name: Start scrcpy-web container
         run: |

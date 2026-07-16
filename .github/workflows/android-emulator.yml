@@ -1,4 +1,4 @@
-name: Rooted Android Cloud Phone (Pixel 8 Pro - Production)
+name: Rooted Android Cloud Phone (Professional)
 on:
   push:
     branches: [ main ]
@@ -31,9 +31,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ----------------------------------------------------------------------
-      # 1. Restore session
-      # ----------------------------------------------------------------------
+      # ======================================================================
+      # PHASE 1: ENVIRONMENT SETUP (Research-Backed)
+      # ======================================================================
+
+      # 1.1 Enable KVM hardware acceleration on GitHub 2-vCPU runner
+      # Source: https://github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available
+      # Source: https://github.com/ReactiveCircus/android-emulator-runner
+      - name: Enable KVM group permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # 1.2 Install ADB on runner (bypasses container ADB instability)
+      # ADB in container after reboot causes "device offline" errors
+      # Using host ADB with explicit serial eliminates this
+      - name: Install ADB tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y android-tools-adb
+
+      # ======================================================================
+      # PHASE 2: SESSION RESTORATION (Persistence)
+      # ======================================================================
+
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -59,234 +81,198 @@ jobs:
             echo "✅ Decrypted"
           fi
 
-      # ----------------------------------------------------------------------
-      # 2. Handle fresh start (clear volume if persist is no)
-      # ----------------------------------------------------------------------
-      - name: Clean data volume (fresh start)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'no'
-        run: |
-          echo "🧹 Starting fresh - clearing data volume..."
-          rm -rf ./android-data/*
-          echo "✅ Data volume cleared"
+      # ======================================================================
+      # PHASE 3: ANDROID EMULATOR (Research-Backed Orchestration)
+      # ======================================================================
 
-      - name: Clean data volume (push fallback - always start fresh on push)
-        if: github.event_name == 'push'
-        run: |
-          echo "🧹 Starting fresh (push trigger) - clearing data volume..."
-          rm -rf ./android-data/*
-          echo "✅ Data volume cleared"
+      # 3.1 Cache AVD snapshot for faster startup
+      # Source: ReactiveCircus/android-emulator-runner README
+      - name: Cache AVD snapshot
+        uses: actions/cache@v3
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ runner.os }}-api33-x86_64
+          restore-keys: |
+            avd-${{ runner.os }}-api33-x86_64
 
-      # ----------------------------------------------------------------------
-      # 3. Create docker-compose.yml
-      # ----------------------------------------------------------------------
-      - name: Create docker-compose.yml
-        run: |
-          cat > docker-compose.yml << 'YAML'
-          services:
-            dockerify-android:
-              container_name: dockerify-android
-              image: shmayro/dockerify-android:latest
-              ports:
-                - "5555:5555"
-              volumes:
-                - ./android-data:/data
-                - ./android-data:/home/androidusr
-              privileged: true
-              environment:
-                - RAM_SIZE=4096
-                - SCREEN_RESOLUTION=1344x2992
-                - SCREEN_DENSITY=489
-                - ROOT_SETUP=1
-                - ARM_TRANSLATION=1
-                - GAPPS_SETUP=1
-              healthcheck:
-                test: ["CMD", "adb", "shell", "getprop", "sys.boot_completed"]
-                interval: 10s
-                timeout: 5s
-                retries: 20
+      # 3.2 Start emulator with hardware acceleration
+      # Source: https://github.com/ReactiveCircus/android-emulator-runner
+      # GPU acceleration: -gpu swiftshader_indirect for headless CI
+      - name: Start Android emulator with hardware acceleration
+        id: emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: Pixel 6
+          force-avd-creation: false
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          disable-animations: true
+          script: echo "Emulator ready"
 
-            scrcpy-web:
-              container_name: scrcpy-web
-              image: shmayro/scrcpy-web:latest
-              ports:
-                - "8000:8000"
-              privileged: true
-              depends_on:
-                dockerify-android:
-                  condition: service_healthy
-              command: >
-                sh -c "
-                  echo '⏳ Waiting for emulator...' &&
-                  for i in 1 2 3 4 5 6 7 8 9 10; do
-                    if adb connect dockerify-android:5555 2>/dev/null | grep -q 'connected'; then
-                      echo '✅ ADB connected' &&
-                      break
-                    fi &&
-                    echo 'Attempt $i/10...' &&
-                    sleep 3
-                  done &&
-                  npm start
-                "
-          YAML
+      # 3.3 Wait for emulator to be fully ready
+      # Using host ADB with retry logic for reliability
+      - name: Wait for emulator (with retry)
+        uses: nick-fields/retry@v2
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          retry_on: error
+          command: |
+            SERIAL="emulator-5554"
+            for i in {1..30}; do
+              if adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+                echo "✅ Emulator fully booted"
+                exit 0
+              fi
+              echo "⏳ Waiting... attempt $i/30"
+              sleep 5
+            done
+            echo "❌ Emulator failed to boot"
+            exit 1
 
-      # ----------------------------------------------------------------------
-      # 4. Start stack
-      # ----------------------------------------------------------------------
-      - name: Start Android stack with docker compose
-        run: |
-          mkdir -p ./android-data
-          docker compose up -d
+      # ======================================================================
+      # PHASE 4: SYSTEM WRITABLE (Research-Backed Android Sequence)
+      # ======================================================================
 
-      - name: Wait for emulator to boot and ROOT_SETUP to complete
-        run: |
-          echo "⏳ Waiting for boot and ROOT_SETUP completion..."
-          for i in {1..120}; do
-            if docker exec dockerify-android adb shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "✅ Emulator booted and ROOT_SETUP complete"
-              break
-            fi
-            sleep $(( i < 30 ? 5 : i < 60 ? 10 : 15 ))
-          done
-
-      # ----------------------------------------------------------------------
-      # 5. Restore data inside container (if persist)
-      # ----------------------------------------------------------------------
-      - name: Restore data inside container (manual)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
-        run: |
-          if [ -f ./android-data/data.tar.gz ]; then
-            echo "📦 Restoring session data..."
-            docker cp ./android-data/data.tar.gz dockerify-android:/tmp/
-            docker exec dockerify-android tar xzf /tmp/data.tar.gz -C /data
-            docker exec dockerify-android rm -f /tmp/data.tar.gz
-            echo "✅ Restored session"
-          fi
-        continue-on-error: true
-
-      # ----------------------------------------------------------------------
-      # 6. Enable writable system (Official Android Sequence - Research-Backed)
-      # ----------------------------------------------------------------------
+      # 4.1 Enable writable system using official Android sequence
+      # Source: Android OverlayFS documentation
+      # Sequence: disable-verity → reboot → remount → su mount
       - name: Enable writable system (Official Android Sequence)
         run: |
           echo "🔧 Enabling writable system using official Android sequence..."
           
-          # Get serial
-          SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
+          SERIAL="emulator-5554"
           echo "Target: $SERIAL"
           
-          # --- Step 1: Ensure root ADB ---
+          # Step 1: Elevate ADB to root
           echo "📌 Step 1: Elevating ADB to root..."
-          docker exec dockerify-android adb root
+          adb -s $SERIAL root
           sleep 3
           
-          # --- Step 2: Disable verity ---
+          # Step 2: Disable verity
           echo "📌 Step 2: Disabling verity..."
-          docker exec dockerify-android adb -s $SERIAL disable-verity || echo "Verity may already be disabled"
+          adb -s $SERIAL disable-verity || echo "Verity may already be disabled"
           
-          # --- Step 3: Reboot to apply verity changes ---
+          # Step 3: Reboot to apply verity changes
           echo "📌 Step 3: Rebooting to apply verity changes..."
-          docker exec dockerify-android adb -s $SERIAL reboot
+          adb -s $SERIAL reboot
           
-          # --- Step 4: Recover ADB after reboot ---
-          echo "📌 Step 4: Recovering ADB connection..."
-          sleep 10
-          docker exec dockerify-android adb kill-server
-          docker exec dockerify-android adb start-server
+          # Step 4: Wait for device after reboot
+          echo "📌 Step 4: Waiting for device to come back..."
+          sleep 15
+          adb kill-server
+          adb start-server
           sleep 3
+          adb connect localhost:5555
           
-          # Wait for device to appear
-          for i in {1..30}; do
-            if docker exec dockerify-android adb devices | grep -q "$SERIAL"; then
-              echo "✅ Device reconnected"
-              break
-            fi
-            sleep 3
-          done
-          
-          docker exec dockerify-android adb -s $SERIAL wait-for-device
-          
-          # Wait for boot completion
+          # Wait for device to be ready
           for i in {1..60}; do
-            if docker exec dockerify-android adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+            if adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
               echo "✅ Device booted"
               break
             fi
             sleep 5
           done
           
-          # --- Step 5: Root again after reboot ---
+          # Step 5: Root again after reboot
           echo "📌 Step 5: Re-establishing root..."
-          docker exec dockerify-android adb root
+          adb -s localhost:5555 root
           sleep 3
           
-          # --- Step 6: Remount with overlay ---
+          # Step 6: Remount with overlay
           echo "📌 Step 6: Running adb remount..."
-          docker exec dockerify-android adb -s $SERIAL remount
+          adb -s localhost:5555 remount
           
-          # --- Step 7: Direct su mount (CRITICAL - activates overlay immediately) ---
+          # Step 7: Direct su mount (activates overlay immediately)
           echo "📌 Step 7: Direct su mount to activate overlay..."
-          docker exec dockerify-android adb -s $SERIAL shell "su 0 mount -o rw,remount /system"
+          adb -s localhost:5555 shell "su 0 mount -o rw,remount /system"
           
-          # --- Step 8: Verify writability ---
+          # Step 8: Verify writability
           echo "📌 Step 8: Verifying system is writable..."
-          if docker exec dockerify-android adb -s $SERIAL shell "touch /system/test_write 2>/dev/null" ; then
-            docker exec dockerify-android adb -s $SERIAL shell "rm /system/test_write"
+          if adb -s localhost:5555 shell "touch /system/test_write 2>/dev/null" ; then
+            adb -s localhost:5555 shell "rm /system/test_write"
             echo "✅ System partition is now writable!"
           else
             echo "❌ System partition is still read-only. Exiting."
             exit 1
           fi
 
-      # ----------------------------------------------------------------------
-      # 7. Configure Pixel 8 Pro build.prop
-      # ----------------------------------------------------------------------
+      # ======================================================================
+      # PHASE 5: DEVICE SPOOFING (Pixel 8 Pro)
+      # ======================================================================
+
       - name: Configure Pixel 8 Pro build.prop
         run: |
           echo "📱 Configuring device as Google Pixel 8 Pro..."
           
-          SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
+          SERIAL="localhost:5555"
           echo "Target: $SERIAL"
           
           # Backup original
-          docker exec dockerify-android adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
+          adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
           
           # Set Pixel 8 Pro properties using su 0
-          docker exec dockerify-android adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop\""
-          docker exec dockerify-android adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.brand=Google' >> /system/build.prop\""
-          docker exec dockerify-android adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.manufacturer=Google' >> /system/build.prop\""
-          docker exec dockerify-android adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.name=husky' >> /system/build.prop\""
-          docker exec dockerify-android adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.device=husky' >> /system/build.prop\""
-          docker exec dockerify-android adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.build.product=husky' >> /system/build.prop\""
+          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop\""
+          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.brand=Google' >> /system/build.prop\""
+          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.manufacturer=Google' >> /system/build.prop\""
+          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.name=husky' >> /system/build.prop\""
+          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.device=husky' >> /system/build.prop\""
+          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.build.product=husky' >> /system/build.prop\""
           
           # Set permissions
-          docker exec dockerify-android adb -s $SERIAL shell chmod 644 /system/build.prop
+          adb -s $SERIAL shell chmod 644 /system/build.prop
           
           echo "✅ Pixel 8 Pro profile applied."
 
-      # ----------------------------------------------------------------------
-      # 8. Install Frida server
-      # ----------------------------------------------------------------------
+      # ======================================================================
+      # PHASE 6: FRIDA SERVER
+      # ======================================================================
+
       - name: Install Frida server
         run: |
-          SERIAL=$(docker exec dockerify-android adb devices | grep emulator | head -1 | awk '{print $1}')
+          SERIAL="localhost:5555"
           echo "Target: $SERIAL"
+          
           curl -L -o frida-server-17.1.3-android-x86_64.xz \
             https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
           unxz frida-server-17.1.3-android-x86_64.xz
-          docker cp frida-server-17.1.3-android-x86_64 dockerify-android:/tmp/frida-server
-          docker exec dockerify-android adb -s $SERIAL push /tmp/frida-server /data/local/tmp/frida-server
-          docker exec dockerify-android adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
-          docker exec dockerify-android adb -s $SERIAL shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
+          
+          adb -s $SERIAL push frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
+          adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
+          adb -s $SERIAL shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
+          
           sleep 3
-          if docker exec dockerify-android adb -s $SERIAL shell "ps -A | grep frida-server" | grep -q frida; then
+          if adb -s $SERIAL shell "ps -A | grep frida-server" | grep -q frida; then
             echo "✅ Frida is running"
           else
             echo "⚠️ Frida not detected, but continuing..."
           fi
 
-      # ----------------------------------------------------------------------
-      # 9. Verify scrcpy-web
-      # ----------------------------------------------------------------------
+      # ======================================================================
+      # PHASE 7: SCRCPY-WEB CONTAINER
+      # ======================================================================
+
+      - name: Start scrcpy-web container
+        run: |
+          docker run -d --name scrcpy-web \
+            --privileged \
+            -p 8000:8000 \
+            shmayro/scrcpy-web:latest \
+            sh -c "
+              for i in {1..30}; do
+                if adb connect host.docker.internal:5555 2>/dev/null | grep -q 'connected'; then
+                  break
+                fi
+                sleep 2
+              done
+              npm start
+            "
+
       - name: Verify scrcpy-web is serving
         run: |
           echo "⏳ Waiting for web server on port 8000..."
@@ -300,9 +286,10 @@ jobs:
           echo "📋 scrcpy-web logs:"
           docker logs scrcpy-web --tail 20
 
-      # ----------------------------------------------------------------------
-      # 10. NPort tunnel
-      # ----------------------------------------------------------------------
+      # ======================================================================
+      # PHASE 8: NPORT TUNNEL
+      # ======================================================================
+
       - name: Start NPort tunnel
         id: tunnel
         run: |
@@ -310,6 +297,7 @@ jobs:
           echo "auth-pass=$AUTH_PASS" >> $GITHUB_OUTPUT
           npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
           echo $! > nport.pid
+          
           echo "⏳ Waiting for tunnel to be live..."
           for i in {1..60}; do
             if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
@@ -321,9 +309,10 @@ jobs:
           TUNNEL_URL="https://urban-phone.nport.link"
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
-      # ----------------------------------------------------------------------
-      # 11. Display info
-      # ----------------------------------------------------------------------
+      # ======================================================================
+      # PHASE 9: DEPLOYMENT INFO
+      # ======================================================================
+
       - name: Display info
         run: |
           echo "================================================"
@@ -341,9 +330,10 @@ jobs:
           echo "  adb forward tcp:27042 tcp:27042"
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
-      # ----------------------------------------------------------------------
-      # 12. Keep alive and save session
-      # ----------------------------------------------------------------------
+      # ======================================================================
+      # PHASE 10: KEEP ALIVE & SESSION PERSISTENCE
+      # ======================================================================
+
       - name: Keep alive
         run: sleep 340m
 
@@ -375,9 +365,10 @@ jobs:
           path: ./android-data/data.tar.gz*
           retention-days: 90
 
-      # ----------------------------------------------------------------------
-      # 13. Cleanup
-      # ----------------------------------------------------------------------
+      # ======================================================================
+      # PHASE 11: CLEANUP
+      # ======================================================================
+
       - name: Cleanup
         if: always()
         run: |

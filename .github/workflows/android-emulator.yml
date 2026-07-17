@@ -32,17 +32,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # --------------------------------------------
-      # 1. Install Docker and ADB
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 1. Install Docker and ADB tools
+      # ------------------------------------------------------------
       - name: Install Docker and ADB
         run: |
           sudo apt-get update
           sudo apt-get install -y docker.io android-tools-adb
 
-      # --------------------------------------------
-      # 2. Session persistence
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 2. Session persistence (restore from previous runs)
+      # ------------------------------------------------------------
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -68,9 +68,9 @@ jobs:
             echo "✅ Decrypted"
           fi
 
-      # --------------------------------------------
-      # 3. Start Redroid container
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 3. Start Redroid container (Android 13, no KVM needed)
+      # ------------------------------------------------------------
       - name: Start Redroid
         run: |
           mkdir -p ./android-data
@@ -95,9 +95,9 @@ jobs:
           done
           adb devices
 
-      # --------------------------------------------
-      # 4. Elevate ADB to root and remount
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 4. Elevate ADB to root and remount system as writable
+      # ------------------------------------------------------------
       - name: Enable system writes
         run: |
           SERIAL="localhost:5555"
@@ -117,9 +117,9 @@ jobs:
             exit 1
           fi
 
-      # --------------------------------------------
-      # 5. Configure Pixel 8 Pro build.prop
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 5. Spoof as Google Pixel 8 Pro (build.prop)
+      # ------------------------------------------------------------
       - name: Configure Pixel 8 Pro build.prop
         run: |
           SERIAL="localhost:5555"
@@ -134,9 +134,9 @@ jobs:
           adb -s $SERIAL shell chmod 644 /system/build.prop
           echo "✅ Pixel 8 Pro profile applied."
 
-      # --------------------------------------------
-      # 6. Install Frida server
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 6. Install Frida server (x86_64)
+      # ------------------------------------------------------------
       - name: Install Frida server
         run: |
           SERIAL="localhost:5555"
@@ -154,9 +154,9 @@ jobs:
             echo "⚠️ Frida not detected, but continuing..."
           fi
 
-      # --------------------------------------------
-      # 7. Start scrcpy-web
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 7. Start scrcpy‑web container (web UI)
+      # ------------------------------------------------------------
       - name: Start scrcpy-web
         run: |
           docker run -d --name scrcpy-web \
@@ -180,10 +180,11 @@ jobs:
             fi
             sleep 3
           done
+          docker logs scrcpy-web --tail 20
 
-      # --------------------------------------------
-      # 8. NPort tunnel
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 8. Expose via NPort tunnel with random authentication
+      # ------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
         run: |
@@ -191,6 +192,7 @@ jobs:
           echo "auth-pass=$AUTH_PASS" >> $GITHUB_OUTPUT
           npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
           echo $! > nport.pid
+
           echo "⏳ Waiting for tunnel to be live..."
           for i in {1..60}; do
             if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
@@ -202,9 +204,9 @@ jobs:
           TUNNEL_URL="https://urban-phone.nport.link"
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
-      # --------------------------------------------
-      # 9. Display info
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 9. Display connection information
+      # ------------------------------------------------------------
       - name: Display info
         run: |
           echo "================================================"
@@ -222,15 +224,15 @@ jobs:
           echo "  adb forward tcp:27042 tcp:27042"
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
-      # --------------------------------------------
-      # 10. Keep alive
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 10. Keep alive for 5h 40m (GitHub max 6h)
+      # ------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
 
-      # --------------------------------------------
-      # 11. Save session
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 11. Save session data (tar + optional GPG encryption)
+      # ------------------------------------------------------------
       - name: Save session
         if: always()
         run: |
@@ -259,9 +261,9 @@ jobs:
           path: ./android-data/data.tar.gz*
           retention-days: 90
 
-      # --------------------------------------------
-      # 12. Cleanup
-      # --------------------------------------------
+      # ------------------------------------------------------------
+      # 12. Cleanup (always runs)
+      # ------------------------------------------------------------
       - name: Cleanup
         if: always()
         run: |

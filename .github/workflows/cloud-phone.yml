@@ -1,0 +1,194 @@
+name: Cloud Phone (Production)
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      persist:
+        description: 'Restore previous session?'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - yes
+          - no
+
+permissions:
+  contents: read
+
+jobs:
+  phone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      # ------------------------------------------------------------
+      # 1. CHECKOUT
+      # ------------------------------------------------------------
+      - uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # 2. ENABLE HARDWARE ACCELERATION (KVM)
+      # ------------------------------------------------------------
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # ------------------------------------------------------------
+      # 3. CACHE OR CLEAR AVD (Persistence)
+      # ------------------------------------------------------------
+      - name: Clear AVD cache (if persist=no)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'no'
+        run: |
+          rm -rf ~/.android/avd
+          echo "AVD cache cleared for fresh start"
+
+      - name: Cache Android AVD
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd
+            ~/.android/adb*
+          key: avd-${{ runner.os }}-api33-x86_64-google_apis
+          restore-keys: |
+            avd-${{ runner.os }}-api33-x86_64-
+
+      # ------------------------------------------------------------
+      # 4. START EMULATOR (Hardware-Accelerated)
+      # ------------------------------------------------------------
+      - name: Start Android emulator
+        id: emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: Pixel 6
+          ram-size: 4096
+          disk-size: 4096M
+          force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
+          emulator-options: >-
+            -no-snapshot-load
+            -no-snapshot-save
+            -no-window
+            -gpu swiftshader_indirect
+            -noaudio
+            -no-boot-anim
+            -camera-back none
+            -camera-front none
+            -memory 4096
+            -cores 4
+          disable-animations: true
+          script: |
+            # This script runs after the emulator is fully booted.
+            # All commands run in a single shell (no variable loss).
+            set -e
+            echo "=========================================="
+            echo "📱 Emulator is ready. Starting services..."
+            echo "=========================================="
+
+            SERIAL="emulator-5554"
+
+            # --------------------------------------------------------
+            # 5. START SCRCPY-WEB (Browser UI)
+            # --------------------------------------------------------
+            echo "📱 Starting scrcpy-web container..."
+            docker run -d --name scrcpy-web \
+              --privileged \
+              -p 8000:8000 \
+              shmayro/scrcpy-web:latest \
+              sh -c "
+                for i in {1..30}; do
+                  if adb connect host.docker.internal:5555 2>/dev/null | grep -q 'connected'; then
+                    break
+                  fi
+                  sleep 2
+                done
+                npm start
+              "
+
+            # Wait for scrcpy-web to be ready
+            echo "⏳ Waiting for web server on port 8000..."
+            for i in {1..40}; do
+              if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
+                echo "✅ Web server ready"
+                break
+              fi
+              sleep 3
+            done
+            docker logs scrcpy-web --tail 10
+
+            # --------------------------------------------------------
+            # 6. START NPORT TUNNEL (Public Access)
+            # --------------------------------------------------------
+            echo "🔗 Starting NPort tunnel..."
+            AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
+            npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
+            NPORT_PID=$!
+            echo $NPORT_PID > nport.pid
+
+            echo "⏳ Waiting for tunnel to be live..."
+            for i in {1..60}; do
+              if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
+                echo "✅ Tunnel live"
+                break
+              fi
+              sleep 5
+            done
+            TUNNEL_URL="https://urban-phone.nport.link"
+
+            # --------------------------------------------------------
+            # 7. DISPLAY CONNECTION INFO
+            # --------------------------------------------------------
+            echo "================================================"
+            echo "🌐 ANDROID PHONE IS READY"
+            echo "================================================"
+            echo "📱 Device: Google Pixel 6 (can be spoofed later)"
+            echo "📱 Web Interface: $TUNNEL_URL"
+            echo "🔑 Auth: admin:$AUTH_PASS"
+            echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
+            echo "================================================"
+            echo "To use ADB locally:"
+            echo "  adb connect $TUNNEL_URL:5555"
+            echo "  adb forward tcp:27042 tcp:27042"
+            echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
+            echo ""
+            echo "⏳ Keeping emulator alive for 340 minutes..."
+            echo "(You can connect now and use the phone.)"
+
+            # --------------------------------------------------------
+            # 8. KEEP ALIVE (Sleep until timeout)
+            # --------------------------------------------------------
+            sleep 340m
+
+            # --------------------------------------------------------
+            # 9. CLEANUP (when sleep ends)
+            # --------------------------------------------------------
+            kill $NPORT_PID 2>/dev/null || true
+            docker stop scrcpy-web 2>/dev/null || true
+            docker rm scrcpy-web 2>/dev/null || true
+            echo "✅ Cleanup done."
+
+      # ------------------------------------------------------------
+      # 10. SAVE SESSION (Artifact)
+      # ------------------------------------------------------------
+      - name: Save session artifact
+        if: always()
+        run: |
+          if [ -d ~/.android/avd ]; then
+            echo "📦 Creating backup of emulator data..."
+            tar -czf avd-backup.tar.gz -C ~/.android avd
+            echo "✅ Backup created"
+          else
+            echo "⚠️ No AVD data found to backup"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: avd-backup
+          path: avd-backup.tar.gz
+          retention-days: 7

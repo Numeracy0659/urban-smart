@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # ------------------------------------------------------------
-      # 1. Install ADB tools (Docker is pre-installed on runner)
+      # 1. Install ADB (Docker is pre-installed)
       # ------------------------------------------------------------
       - name: Install ADB
         run: |
@@ -41,7 +41,7 @@ jobs:
           sudo apt-get install -y android-tools-adb
 
       # ------------------------------------------------------------
-      # 2. Session persistence (restore from previous runs)
+      # 2. Session persistence
       # ------------------------------------------------------------
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -69,7 +69,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 3. Start Redroid container (Android 13, no KVM needed)
+      # 3. Start Redroid container with robust wait
       # ------------------------------------------------------------
       - name: Start Redroid
         run: |
@@ -85,10 +85,10 @@ jobs:
             androidboot.redroid_dpi=420 \
             androidboot.redroid_fps=60
 
-          echo "⏳ Waiting for Redroid to boot..."
-          for i in {1..60}; do
+          echo "⏳ Waiting for Redroid to boot and ADB to respond..."
+          for i in {1..90}; do
             if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
-              echo "✅ Redroid ready"
+              echo "✅ ADB connected"
               break
             fi
             sleep 5
@@ -96,14 +96,20 @@ jobs:
           adb devices
 
       # ------------------------------------------------------------
-      # 4. Elevate ADB to root and remount system as writable
+      # 4. Elevate ADB to root and remount (with retry)
       # ------------------------------------------------------------
       - name: Enable system writes
         run: |
           SERIAL="localhost:5555"
-          echo "🔑 Elevating ADB to root..."
-          adb -s $SERIAL root
-          sleep 3
+          echo "🔑 Elevating ADB to root (with retry)..."
+          for i in {1..10}; do
+            if adb -s $SERIAL root 2>/dev/null; then
+              echo "✅ ADB root succeeded"
+              break
+            fi
+            echo "⏳ Retrying adb root... attempt $i"
+            sleep 5
+          done
 
           echo "🔧 Remounting system as writable..."
           adb -s $SERIAL shell "mount -o rw,remount /"
@@ -118,7 +124,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 5. Spoof as Google Pixel 8 Pro (build.prop)
+      # 5. Spoof as Google Pixel 8 Pro
       # ------------------------------------------------------------
       - name: Configure Pixel 8 Pro build.prop
         run: |
@@ -135,7 +141,7 @@ jobs:
           echo "✅ Pixel 8 Pro profile applied."
 
       # ------------------------------------------------------------
-      # 6. Install Frida server (x86_64)
+      # 6. Install Frida server
       # ------------------------------------------------------------
       - name: Install Frida server
         run: |
@@ -155,7 +161,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 7. Start scrcpy‑web container (web UI)
+      # 7. Start scrcpy‑web
       # ------------------------------------------------------------
       - name: Start scrcpy-web
         run: |
@@ -183,7 +189,7 @@ jobs:
           docker logs scrcpy-web --tail 20
 
       # ------------------------------------------------------------
-      # 8. Expose via NPort tunnel with random authentication
+      # 8. NPort tunnel
       # ------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
@@ -205,7 +211,7 @@ jobs:
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------
-      # 9. Display connection information
+      # 9. Display info
       # ------------------------------------------------------------
       - name: Display info
         run: |
@@ -225,13 +231,13 @@ jobs:
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
       # ------------------------------------------------------------
-      # 10. Keep alive for 5h 40m (GitHub max 6h)
+      # 10. Keep alive
       # ------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
 
       # ------------------------------------------------------------
-      # 11. Save session data (tar + optional GPG encryption)
+      # 11. Save session
       # ------------------------------------------------------------
       - name: Save session
         if: always()
@@ -262,7 +268,7 @@ jobs:
           retention-days: 90
 
       # ------------------------------------------------------------
-      # 12. Cleanup (always runs)
+      # 12. Cleanup
       # ------------------------------------------------------------
       - name: Cleanup
         if: always()

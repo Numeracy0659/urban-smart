@@ -30,21 +30,16 @@ jobs:
     timeout-minutes: 355
 
     steps:
-      # ================================================================
-      # PHASE 1: ENVIRONMENT SETUP
-      # ================================================================
-
       - uses: actions/checkout@v4
 
-      - name: Install ADB tools (Docker is pre‑installed)
+      - name: Install ADB tools
         run: |
           sudo apt-get update
           sudo apt-get install -y android-tools-adb
 
-      # ================================================================
-      # PHASE 2: SESSION RESTORATION
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # Session restoration
+      # ------------------------------------------------------------
       - name: Restore session (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -70,15 +65,12 @@ jobs:
             echo "✅ Decrypted"
           fi
 
-      # ================================================================
-      # PHASE 3: START REDROID CONTAINER
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # Start Redroid with robust wait
+      # ------------------------------------------------------------
       - name: Start Redroid container
         run: |
           mkdir -p ./android-data
-
-          # Load binder kernel module (optional, improves performance)
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null || true
 
           docker run -d --name redroid \
@@ -93,42 +85,52 @@ jobs:
             androidboot.redroid_fps=60 \
             androidboot.use_memfd=true
 
-          echo "⏳ Waiting for Redroid to boot (90s max)..."
-          sleep 30
+          echo "⏳ Waiting for Redroid to boot (up to 120 seconds)..."
+          # Wait for container to be healthy (by checking logs)
+          for i in {1..60}; do
+            if docker logs redroid 2>&1 | grep -q "Boot completed"; then
+              echo "✅ Redroid boot completed"
+              break
+            fi
+            sleep 2
+          done
 
-          # Reset ADB to avoid stale connections
+          # Reset ADB
           adb kill-server
           adb start-server
 
-          # Connect and verify
+          # Connect and wait for device to appear
+          echo "⏳ Connecting ADB..."
           for i in {1..30}; do
             if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
               echo "✅ ADB connected"
               break
             fi
-            sleep 5
+            sleep 3
           done
 
-          for i in {1..30}; do
-            if adb devices | grep -q "localhost:5555.*device"; then
+          # Wait for device to be fully responsive (shell command works)
+          echo "⏳ Waiting for device to become responsive..."
+          for i in {1..40}; do
+            if adb -s localhost:5555 shell "echo ready" 2>/dev/null | grep -q "ready"; then
               echo "✅ Device fully ready"
               break
             fi
-            sleep 5
+            sleep 3
           done
 
           adb devices
 
-      # ================================================================
-      # PHASE 4: ROOT & SYSTEM WRITABLE (using su)
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # Root and system writable
+      # ------------------------------------------------------------
       - name: Enable system writes (root via su)
         run: |
           SERIAL="localhost:5555"
           echo "🔑 Verifying device readiness..."
           if ! adb -s $SERIAL shell "echo ready" 2>/dev/null | grep -q "ready"; then
-            echo "❌ Device not responding"
+            echo "❌ Device still not responding. Dumping container logs..."
+            docker logs redroid
             exit 1
           fi
 
@@ -144,10 +146,9 @@ jobs:
             exit 1
           fi
 
-      # ================================================================
-      # PHASE 5: SPOOF PIXEL 8 PRO (build.prop only)
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # Spoof Pixel 8 Pro
+      # ------------------------------------------------------------
       - name: Configure Pixel 8 Pro build.prop
         run: |
           SERIAL="localhost:5555"
@@ -162,10 +163,9 @@ jobs:
           adb -s $SERIAL shell "su -c 'chmod 644 /system/build.prop'"
           echo "✅ Pixel 8 Pro profile applied"
 
-      # ================================================================
-      # PHASE 6: INSTALL FRIDA SERVER
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # Frida
+      # ------------------------------------------------------------
       - name: Install Frida server
         run: |
           SERIAL="localhost:5555"
@@ -183,10 +183,9 @@ jobs:
             echo "⚠️ Frida not detected, continuing..."
           fi
 
-      # ================================================================
-      # PHASE 7: SCRCPY‑WEB (browser UI)
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # scrcpy-web
+      # ------------------------------------------------------------
       - name: Start scrcpy-web
         run: |
           docker run -d --name scrcpy-web \
@@ -212,10 +211,9 @@ jobs:
           done
           docker logs scrcpy-web --tail 20
 
-      # ================================================================
-      # PHASE 8: NPORT TUNNEL (with auth)
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # NPort tunnel
+      # ------------------------------------------------------------
       - name: Start NPort tunnel
         id: tunnel
         run: |
@@ -235,10 +233,9 @@ jobs:
           TUNNEL_URL="https://urban-phone.nport.link"
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
-      # ================================================================
-      # PHASE 9: DEPLOYMENT INFO
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # Display info
+      # ------------------------------------------------------------
       - name: Display connection info
         run: |
           echo "================================================"
@@ -256,17 +253,15 @@ jobs:
           echo "  adb forward tcp:27042 tcp:27042"
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
-      # ================================================================
-      # PHASE 10: KEEP ALIVE
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # Keep alive
+      # ------------------------------------------------------------
       - name: Keep alive
         run: sleep 340m
 
-      # ================================================================
-      # PHASE 11: SESSION PERSISTENCE
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # Save session
+      # ------------------------------------------------------------
       - name: Save session
         if: always()
         run: |
@@ -296,10 +291,9 @@ jobs:
           path: ./android-data/data.tar.gz*
           retention-days: 90
 
-      # ================================================================
-      # PHASE 12: CLEANUP
-      # ================================================================
-
+      # ------------------------------------------------------------
+      # Cleanup
+      # ------------------------------------------------------------
       - name: Cleanup
         if: always()
         run: |

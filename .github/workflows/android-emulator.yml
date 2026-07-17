@@ -1,4 +1,4 @@
-name: Redroid Android Cloud Phone (Production)
+name: Cloud Android Phone (Smooth & Production)
 on:
   push:
     branches: [ main ]
@@ -25,22 +25,34 @@ permissions:
   contents: read
 
 jobs:
-  android:
+  phone:
     runs-on: ubuntu-latest
     timeout-minutes: 355
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ADB tools
+      # ==============================================================
+      # 1. Enable KVM hardware acceleration (makes emulator smooth)
+      # ==============================================================
+      - name: Enable KVM group permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # ==============================================================
+      # 2. Install ADB tools (for debugging, optional)
+      # ==============================================================
+      - name: Install ADB
         run: |
           sudo apt-get update
           sudo apt-get install -y android-tools-adb
 
-      # ------------------------------------------------------------
-      # Session restoration
-      # ------------------------------------------------------------
-      - name: Restore session (manual)
+      # ==============================================================
+      # 3. Session persistence: restore encrypted artifact if any
+      # ==============================================================
+      - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
         with:
@@ -48,7 +60,7 @@ jobs:
           path: ./android-data
         continue-on-error: true
 
-      - name: Restore session (push)
+      - name: Restore session data (push)
         if: github.event_name == 'push'
         uses: actions/download-artifact@v4
         with:
@@ -62,145 +74,47 @@ jobs:
           if [ -f ./android-data/data.tar.gz.gpg ]; then
             gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -d ./android-data/data.tar.gz.gpg > ./android-data/data.tar.gz
             rm -f ./android-data/data.tar.gz.gpg
-            echo "✅ Decrypted"
+            tar -xzf ./android-data/data.tar.gz -C ./android-data/
+            rm -f ./android-data/data.tar.gz
+            echo "✅ Session restored and decrypted"
           fi
 
-      # ------------------------------------------------------------
-      # Start Redroid with robust wait
-      # ------------------------------------------------------------
-      - name: Start Redroid container
+      # ==============================================================
+      # 4. Create the setup script (runs inside the emulator runner)
+      # ==============================================================
+      - name: Create setup script
         run: |
-          mkdir -p ./android-data
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null || true
+          cat > setup.sh << 'SCRIPT'
+          #!/bin/bash
+          set -e
 
-          docker run -d --name redroid \
-            --privileged \
-            -v $(pwd)/android-data:/data \
-            -p 5555:5555 \
-            redroid/redroid:13.0.0-latest \
-            androidboot.redroid_gpu_mode=guest \
-            androidboot.redroid_width=1080 \
-            androidboot.redroid_height=1920 \
-            androidboot.redroid_dpi=420 \
-            androidboot.redroid_fps=60 \
-            androidboot.use_memfd=true
+          echo "================================================"
+          echo "📱 EMULATOR IS READY – STARTING SERVICES"
+          echo "================================================"
 
-          echo "⏳ Waiting for Redroid to boot (up to 120 seconds)..."
-          # Wait for container to be healthy (by checking logs)
-          for i in {1..60}; do
-            if docker logs redroid 2>&1 | grep -q "Boot completed"; then
-              echo "✅ Redroid boot completed"
-              break
-            fi
-            sleep 2
-          done
+          # The emulator is already booted when this script runs.
+          # Wait a moment for ADB to be fully stable.
+          sleep 5
 
-          # Reset ADB
-          adb kill-server
-          adb start-server
-
-          # Connect and wait for device to appear
-          echo "⏳ Connecting ADB..."
-          for i in {1..30}; do
-            if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
-              echo "✅ ADB connected"
-              break
-            fi
-            sleep 3
-          done
-
-          # Wait for device to be fully responsive (shell command works)
-          echo "⏳ Waiting for device to become responsive..."
-          for i in {1..40}; do
-            if adb -s localhost:5555 shell "echo ready" 2>/dev/null | grep -q "ready"; then
-              echo "✅ Device fully ready"
-              break
-            fi
-            sleep 3
-          done
-
-          adb devices
-
-      # ------------------------------------------------------------
-      # Root and system writable
-      # ------------------------------------------------------------
-      - name: Enable system writes (root via su)
-        run: |
-          SERIAL="localhost:5555"
-          echo "🔑 Verifying device readiness..."
-          if ! adb -s $SERIAL shell "echo ready" 2>/dev/null | grep -q "ready"; then
-            echo "❌ Device still not responding. Dumping container logs..."
-            docker logs redroid
-            exit 1
-          fi
-
-          echo "🔧 Remounting system as writable..."
-          adb -s $SERIAL shell "su -c 'mount -o rw,remount /'"
-
-          echo "📌 Verifying write access..."
-          if adb -s $SERIAL shell "su -c 'touch /system/test_write 2>/dev/null'"; then
-            adb -s $SERIAL shell "su -c 'rm /system/test_write'"
-            echo "✅ System partition is writable"
-          else
-            echo "❌ System still read‑only. Exiting."
-            exit 1
-          fi
-
-      # ------------------------------------------------------------
-      # Spoof Pixel 8 Pro
-      # ------------------------------------------------------------
-      - name: Configure Pixel 8 Pro build.prop
-        run: |
-          SERIAL="localhost:5555"
-          echo "📱 Configuring device as Google Pixel 8 Pro..."
-          adb -s $SERIAL shell "su -c 'cp /system/build.prop /system/build.prop.backup'"
-          adb -s $SERIAL shell "su -c \"echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop\""
-          adb -s $SERIAL shell "su -c \"echo 'ro.product.brand=Google' >> /system/build.prop\""
-          adb -s $SERIAL shell "su -c \"echo 'ro.product.manufacturer=Google' >> /system/build.prop\""
-          adb -s $SERIAL shell "su -c \"echo 'ro.product.name=husky' >> /system/build.prop\""
-          adb -s $SERIAL shell "su -c \"echo 'ro.product.device=husky' >> /system/build.prop\""
-          adb -s $SERIAL shell "su -c \"echo 'ro.build.product=husky' >> /system/build.prop\""
-          adb -s $SERIAL shell "su -c 'chmod 644 /system/build.prop'"
-          echo "✅ Pixel 8 Pro profile applied"
-
-      # ------------------------------------------------------------
-      # Frida
-      # ------------------------------------------------------------
-      - name: Install Frida server
-        run: |
-          SERIAL="localhost:5555"
-          echo "🛠️ Installing Frida server..."
-          curl -L -o frida-server-17.1.3-android-x86_64.xz \
-            https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
-          unxz frida-server-17.1.3-android-x86_64.xz
-          adb -s $SERIAL push frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
-          adb -s $SERIAL shell "su -c 'chmod +x /data/local/tmp/frida-server'"
-          adb -s $SERIAL shell "su -c 'nohup /data/local/tmp/frida-server > /dev/null 2>&1 &'"
-          sleep 3
-          if adb -s $SERIAL shell "ps -A | grep frida-server" | grep -q frida; then
-            echo "✅ Frida is running"
-          else
-            echo "⚠️ Frida not detected, continuing..."
-          fi
-
-      # ------------------------------------------------------------
-      # scrcpy-web
-      # ------------------------------------------------------------
-      - name: Start scrcpy-web
-        run: |
+          # --------------------------------------------
+          # Start scrcpy-web (browser UI) using host network
+          # --------------------------------------------
+          echo "📱 Starting scrcpy-web on port 8000..."
           docker run -d --name scrcpy-web \
+            --network host \
             --privileged \
-            -p 8000:8000 \
             shmayro/scrcpy-web:latest \
             sh -c "
               for i in {1..30}; do
-                if adb connect host.docker.internal:5555 2>/dev/null | grep -q 'connected'; then
+                if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
                   break
                 fi
                 sleep 2
               done
               npm start
             "
+
+          # Wait for web server to respond
           echo "⏳ Waiting for web server on port 8000..."
           for i in {1..40}; do
             if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
@@ -209,18 +123,18 @@ jobs:
             fi
             sleep 3
           done
+
+          # Show scrcpy-web logs for debugging
           docker logs scrcpy-web --tail 20
 
-      # ------------------------------------------------------------
-      # NPort tunnel
-      # ------------------------------------------------------------
-      - name: Start NPort tunnel
-        id: tunnel
-        run: |
+          # --------------------------------------------
+          # Start NPort tunnel with random authentication
+          # --------------------------------------------
+          echo "🔗 Starting NPort tunnel..."
           AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
-          echo "auth-pass=$AUTH_PASS" >> $GITHUB_OUTPUT
           npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
-          echo $! > nport.pid
+          NPORT_PID=$!
+          echo $NPORT_PID > nport.pid
 
           echo "⏳ Waiting for tunnel to be live..."
           for i in {1..60}; do
@@ -231,56 +145,82 @@ jobs:
             sleep 5
           done
           TUNNEL_URL="https://urban-phone.nport.link"
-          echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
-      # ------------------------------------------------------------
-      # Display info
-      # ------------------------------------------------------------
-      - name: Display connection info
-        run: |
+          # --------------------------------------------
+          # Display connection information
+          # --------------------------------------------
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
-          echo "📱 Device: Google Pixel 8 Pro (spoofed)"
-          echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
-          echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
-          echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"
-          echo "🔑 Root: Yes (Redroid + su)"
-          echo "🛠️  Frida: Running on port 27042"
+          echo "📱 Web Interface: $TUNNEL_URL"
+          echo "🔑 Auth: admin:$AUTH_PASS"
+          echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
           echo "================================================"
           echo "To use ADB locally:"
-          echo "  adb connect ${{ steps.tunnel.outputs.tunnel-url }}:5555"
+          echo "  adb connect $TUNNEL_URL:5555"
           echo "  adb forward tcp:27042 tcp:27042"
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
-      # ------------------------------------------------------------
-      # Keep alive
-      # ------------------------------------------------------------
-      - name: Keep alive
-        run: sleep 340m
+          # --------------------------------------------
+          # Keep alive for the entire job duration
+          # --------------------------------------------
+          echo "⏳ Keeping emulator alive for 340 minutes..."
+          sleep 340m
+          SCRIPT
 
-      # ------------------------------------------------------------
-      # Save session
-      # ------------------------------------------------------------
+          chmod +x setup.sh
+
+      # ==============================================================
+      # 5. Start the Android emulator with hardware acceleration
+      # ==============================================================
+      - name: Start Android emulator
+        id: emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: Nexus 5X
+          ram-size: 4096
+          disk-size: 4096M
+          force-avd-creation: false
+          disable-linux-hw-accel: false   # use KVM
+          emulator-boot-timeout: 600
+          emulator-options: >-
+            -no-snapshot-load
+            -no-snapshot-save
+            -no-window
+            -gpu swiftshader_indirect
+            -noaudio
+            -no-boot-anim
+            -camera-back none
+            -camera-front none
+            -memory 4096
+            -cores 4
+          disable-animations: true
+          script: bash setup.sh
+
+      # ==============================================================
+      # 6. Save session (encrypt and upload artifact)
+      # ==============================================================
       - name: Save session
         if: always()
         run: |
-          if docker ps -a --filter "name=redroid" --format '{{.Names}}' | grep -q redroid; then
+          # Only save if the emulator data directory exists and contains something
+          if [ -d ./android-data ] && [ "$(ls -A ./android-data)" ]; then
             echo "📦 Creating backup..."
-            docker exec redroid tar czf /tmp/data.tar.gz --warning=no-file-changed --ignore-failed-read -C /data . || true
-            if docker exec redroid test -f /tmp/data.tar.gz; then
-              docker cp redroid:/tmp/data.tar.gz ./android-data/
-              echo "✅ Backup created"
+            tar -czf data.tar.gz -C ./android-data .
+            if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ]; then
+              gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c data.tar.gz
+              mv data.tar.gz.gpg ./android-data/
+              rm -f data.tar.gz
+              echo "✅ Backup encrypted"
             else
-              echo "⚠️ Backup failed"
+              mv data.tar.gz ./android-data/
+              echo "✅ Backup created (plain)"
             fi
           else
-            echo "⚠️ Container not running, skipping save"
-          fi
-
-          if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ] && [ -f ./android-data/data.tar.gz ]; then
-            gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c ./android-data/data.tar.gz
-            rm -f ./android-data/data.tar.gz
+            echo "⚠️ No data to save"
           fi
 
       - name: Upload session artifact
@@ -288,15 +228,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-data
-          path: ./android-data/data.tar.gz*
+          path: ./android-data/*
           retention-days: 90
 
-      # ------------------------------------------------------------
-      # Cleanup
-      # ------------------------------------------------------------
+      # ==============================================================
+      # 7. Cleanup (always runs)
+      # ==============================================================
       - name: Cleanup
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
-          docker stop redroid scrcpy-web 2>/dev/null || true
-          docker rm redroid scrcpy-web 2>/dev/null || true
+          docker stop scrcpy-web 2>/dev/null || true
+          docker rm scrcpy-web 2>/dev/null || true
+          # The emulator is automatically killed by the runner action.

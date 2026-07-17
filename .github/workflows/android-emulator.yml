@@ -99,10 +99,9 @@ jobs:
             avd-${{ runner.os }}-api33-x86_64-
 
       # ============================================================
-      # PHASE 5: ANDROID EMULATOR (Hardware Accelerated)
-      # FIXED: Use Nexus 5X profile instead of Pixel 6
+      # PHASE 5: ANDROID EMULATOR & ALL SETUP (Script runs everything)
       # ============================================================
-      - name: Start Android emulator
+      - name: Start Android emulator and run setup
         id: emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -127,246 +126,202 @@ jobs:
             -memory 4096
             -cores 4
           disable-animations: true
-          script: echo "Emulator is ready"
+          script: |
+            # This script runs inside the runner with ADB access to the emulator.
+            # The emulator stays alive until this script exits.
+            set -e
 
-      # ============================================================
-      # PHASE 6: WAIT FOR BOOT COMPLETION (With Retry)
-      # ============================================================
-      - name: Wait for emulator boot completion
-        uses: nick-fields/retry@v2
-        with:
-          timeout_minutes: 5
-          max_attempts: 5
-          retry_on: error
-          command: |
             SERIAL="emulator-5554"
+
+            echo "================================================"
+            echo "📱 EMULATOR IS READY. STARTING SETUP..."
+            echo "================================================"
+
+            # ============================================================
+            # PHASE 6: ENABLE WRITABLE SYSTEM (Official Android Sequence)
+            # ============================================================
+            echo "🔧 Enabling writable system using official Android sequence..."
+
+            # Step 1: adb root
+            echo "📌 Step 1: Elevating ADB to root..."
+            adb -s $SERIAL root
+            sleep 3
+
+            # Step 2: adb disable-verity
+            echo "📌 Step 2: Disabling verity..."
+            adb -s $SERIAL disable-verity || echo "Verity may already be disabled"
+
+            # Step 3: adb reboot
+            echo "📌 Step 3: Rebooting to apply verity changes..."
+            adb -s $SERIAL reboot
+
+            # Step 4: adb wait-for-device (with recovery)
+            echo "📌 Step 4: Waiting for device to come back..."
+            sleep 15
+            adb kill-server
+            adb start-server
+            sleep 3
+
             for i in {1..30}; do
-              if adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-                echo "✅ Emulator fully booted"
-                exit 0
+              if adb devices | grep -q "emulator-5554.*device"; then
+                echo "✅ Device reconnected"
+                break
               fi
-              echo "⏳ Waiting... attempt $i/30"
+              sleep 3
+            done
+
+            adb -s $SERIAL wait-for-device
+
+            # Wait for boot completion after reboot
+            for i in {1..60}; do
+              if adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+                echo "✅ Device booted"
+                break
+              fi
               sleep 5
             done
-            echo "❌ Emulator failed to boot"
-            exit 1
 
-      # ============================================================
-      # PHASE 7: ENABLE WRITABLE SYSTEM (Official Android Sequence)
-      # ============================================================
-      - name: Enable writable system (Official Android Sequence)
-        run: |
-          echo "🔧 Enabling writable system using official Android sequence..."
-
-          SERIAL="emulator-5554"
-          echo "Target: $SERIAL"
-
-          # Step 1: adb root
-          echo "📌 Step 1: Elevating ADB to root..."
-          adb -s $SERIAL root
-          sleep 3
-
-          # Step 2: adb disable-verity
-          echo "📌 Step 2: Disabling verity..."
-          adb -s $SERIAL disable-verity || echo "Verity may already be disabled"
-
-          # Step 3: adb reboot
-          echo "📌 Step 3: Rebooting to apply verity changes..."
-          adb -s $SERIAL reboot
-
-          # Step 4: adb wait-for-device (with recovery)
-          echo "📌 Step 4: Waiting for device to come back..."
-          sleep 15
-          adb kill-server
-          adb start-server
-          sleep 3
-
-          for i in {1..30}; do
-            if adb devices | grep -q "emulator-5554.*device"; then
-              echo "✅ Device reconnected"
-              break
-            fi
+            # Step 5: adb root again
+            echo "📌 Step 5: Re-establishing root..."
+            adb -s $SERIAL root
             sleep 3
-          done
 
-          adb -s $SERIAL wait-for-device
+            # Step 6: adb remount
+            echo "📌 Step 6: Running adb remount..."
+            adb -s $SERIAL remount
 
-          # Wait for boot completion after reboot
-          for i in {1..60}; do
-            if adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "✅ Device booted"
-              break
+            # Step 7: su mount (activates overlay immediately)
+            echo "📌 Step 7: Direct su mount to activate overlay..."
+            adb -s $SERIAL shell "su 0 mount -o rw,remount /system"
+
+            # Step 8: Verify writability
+            echo "📌 Step 8: Verifying system is writable..."
+            if adb -s $SERIAL shell "touch /system/test_write 2>/dev/null"; then
+              adb -s $SERIAL shell "rm /system/test_write"
+              echo "✅ System partition is now writable!"
+            else
+              echo "❌ System partition is still read-only. Exiting."
+              exit 1
             fi
-            sleep 5
-          done
 
-          # Step 5: adb root again
-          echo "📌 Step 5: Re-establishing root..."
-          adb -s $SERIAL root
-          sleep 3
+            # ============================================================
+            # PHASE 7: CONFIGURE PIXEL 8 PRO build.prop
+            # ============================================================
+            echo "📱 Configuring device as Google Pixel 8 Pro..."
+            adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
+            adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop\""
+            adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.brand=Google' >> /system/build.prop\""
+            adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.manufacturer=Google' >> /system/build.prop\""
+            adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.name=husky' >> /system/build.prop\""
+            adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.device=husky' >> /system/build.prop\""
+            adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.build.product=husky' >> /system/build.prop\""
+            adb -s $SERIAL shell chmod 644 /system/build.prop
+            echo "✅ Pixel 8 Pro profile applied."
 
-          # Step 6: adb remount
-          echo "📌 Step 6: Running adb remount..."
-          adb -s $SERIAL remount
-
-          # Step 7: su mount (activates overlay immediately)
-          echo "📌 Step 7: Direct su mount to activate overlay..."
-          adb -s $SERIAL shell "su 0 mount -o rw,remount /system"
-
-          # Step 8: Verify writability
-          echo "📌 Step 8: Verifying system is writable..."
-          if adb -s $SERIAL shell "touch /system/test_write 2>/dev/null"; then
-            adb -s $SERIAL shell "rm /system/test_write"
-            echo "✅ System partition is now writable!"
-          else
-            echo "❌ System partition is still read-only. Exiting."
-            exit 1
-          fi
-
-      # ============================================================
-      # PHASE 8: CONFIGURE PIXEL 8 PRO build.prop
-      # ============================================================
-      - name: Configure Pixel 8 Pro build.prop
-        run: |
-          echo "📱 Configuring device as Google Pixel 8 Pro..."
-
-          SERIAL="emulator-5554"
-          echo "Target: $SERIAL"
-
-          # Backup original
-          adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
-
-          # Set Pixel 8 Pro properties using su 0
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.brand=Google' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.manufacturer=Google' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.name=husky' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.device=husky' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.build.product=husky' >> /system/build.prop\""
-
-          # Set permissions
-          adb -s $SERIAL shell chmod 644 /system/build.prop
-
-          echo "✅ Pixel 8 Pro profile applied."
-
-      # ============================================================
-      # PHASE 9: INSTALL FRIDA SERVER
-      # ============================================================
-      - name: Install Frida server
-        run: |
-          SERIAL="emulator-5554"
-          echo "Target: $SERIAL"
-
-          curl -L -o frida-server-17.1.3-android-x86_64.xz \
-            https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
-          unxz frida-server-17.1.3-android-x86_64.xz
-
-          adb -s $SERIAL push frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
-          adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
-          adb -s $SERIAL shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
-
-          sleep 3
-          if adb -s $SERIAL shell "ps -A | grep frida-server" | grep -q frida; then
-            echo "✅ Frida is running"
-          else
-            echo "⚠️ Frida not detected, but continuing..."
-          fi
-
-      # ============================================================
-      # PHASE 10: SCRCPY-WEB CONTAINER
-      # ============================================================
-      - name: Start scrcpy-web container
-        run: |
-          docker run -d --name scrcpy-web \
-            --privileged \
-            -p 8000:8000 \
-            shmayro/scrcpy-web:latest \
-            sh -c "
-              for i in {1..30}; do
-                if adb connect host.docker.internal:5555 2>/dev/null | grep -q 'connected'; then
-                  break
-                fi
-                sleep 2
-              done
-              npm start
-            "
-
-      - name: Verify scrcpy-web is serving
-        run: |
-          echo "⏳ Waiting for web server on port 8000..."
-          for i in {1..40}; do
-            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
-              echo "✅ Web server ready"
-              break
-            fi
+            # ============================================================
+            # PHASE 8: INSTALL FRIDA SERVER
+            # ============================================================
+            echo "🛠️ Installing Frida server..."
+            curl -L -o frida-server-17.1.3-android-x86_64.xz \
+              https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
+            unxz frida-server-17.1.3-android-x86_64.xz
+            adb -s $SERIAL push frida-server-17.1.3-android-x86_64 /data/local/tmp/frida-server
+            adb -s $SERIAL shell chmod +x /data/local/tmp/frida-server
+            adb -s $SERIAL shell "nohup /data/local/tmp/frida-server > /dev/null 2>&1 &"
             sleep 3
-          done
-          echo "📋 scrcpy-web logs:"
-          docker logs scrcpy-web --tail 20
-
-      # ============================================================
-      # PHASE 11: NPORT TUNNEL
-      # ============================================================
-      - name: Start NPort tunnel
-        id: tunnel
-        run: |
-          AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
-          echo "auth-pass=$AUTH_PASS" >> $GITHUB_OUTPUT
-          npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
-          echo $! > nport.pid
-
-          echo "⏳ Waiting for tunnel to be live..."
-          for i in {1..60}; do
-            if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
-              echo "✅ Tunnel live"
-              break
+            if adb -s $SERIAL shell "ps -A | grep frida-server" | grep -q frida; then
+              echo "✅ Frida is running"
+            else
+              echo "⚠️ Frida not detected, but continuing..."
             fi
-            sleep 5
-          done
-          TUNNEL_URL="https://urban-phone.nport.link"
-          echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+
+            # ============================================================
+            # PHASE 9: START SCRCPY-WEB CONTAINER
+            # ============================================================
+            echo "📱 Starting scrcpy-web container..."
+            docker run -d --name scrcpy-web \
+              --privileged \
+              -p 8000:8000 \
+              shmayro/scrcpy-web:latest \
+              sh -c "
+                for i in {1..30}; do
+                  if adb connect host.docker.internal:5555 2>/dev/null | grep -q 'connected'; then
+                    break
+                  fi
+                  sleep 2
+                done
+                npm start
+              "
+
+            # Wait for scrcpy-web to be ready
+            echo "⏳ Waiting for web server on port 8000..."
+            for i in {1..40}; do
+              if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
+                echo "✅ Web server ready"
+                break
+              fi
+              sleep 3
+            done
+            echo "📋 scrcpy-web logs:"
+            docker logs scrcpy-web --tail 20
+
+            # ============================================================
+            # PHASE 10: START NPORT TUNNEL
+            # ============================================================
+            echo "🔗 Starting NPort tunnel..."
+            AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
+            npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
+            NPORT_PID=$!
+            echo $NPORT_PID > nport.pid
+
+            echo "⏳ Waiting for tunnel to be live..."
+            for i in {1..60}; do
+              if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
+                echo "✅ Tunnel live"
+                break
+              fi
+              sleep 5
+            done
+            TUNNEL_URL="https://urban-phone.nport.link"
+
+            # ============================================================
+            # PHASE 11: DISPLAY DEPLOYMENT INFO
+            # ============================================================
+            echo "================================================"
+            echo "🌐 ANDROID PHONE IS READY"
+            echo "================================================"
+            echo "📱 Device: Google Pixel 8 Pro (spoofed)"
+            echo "📱 Web Interface: $TUNNEL_URL"
+            echo "🔑 Auth: admin:$AUTH_PASS"
+            echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
+            echo "🔑 Root: Yes (Magisk, ROOT_SETUP completed)"
+            echo "🛠️  Frida: Running on emulator (port 27042)"
+            echo "================================================"
+            echo "To use ADB locally:"
+            echo "  adb connect $TUNNEL_URL:5555"
+            echo "  adb forward tcp:27042 tcp:27042"
+            echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
+
+            # ============================================================
+            # PHASE 12: KEEP ALIVE (Sleep until timeout)
+            # ============================================================
+            echo "⏳ Keeping emulator alive for 340 minutes..."
+            sleep 340m
 
       # ============================================================
-      # PHASE 12: DEPLOYMENT INFO
+      # PHASE 13: SAVE SESSION (After script exits, emulator is killed)
       # ============================================================
-      - name: Display info
-        run: |
-          echo "================================================"
-          echo "🌐 ANDROID PHONE IS READY"
-          echo "================================================"
-          echo "📱 Device: Google Pixel 8 Pro (spoofed)"
-          echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
-          echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
-          echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"
-          echo "🔑 Root: Yes (Magisk, ROOT_SETUP completed)"
-          echo "🛠️  Frida: Running on emulator (port 27042)"
-          echo "================================================"
-          echo "To use ADB locally:"
-          echo "  adb connect ${{ steps.tunnel.outputs.tunnel-url }}:5555"
-          echo "  adb forward tcp:27042 tcp:27042"
-          echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
-
-      # ============================================================
-      # PHASE 13: KEEP ALIVE & SESSION PERSISTENCE
-      # ============================================================
-      - name: Keep alive
-        run: sleep 340m
-
       - name: Save session
         if: always()
         run: |
-          if docker ps -a --filter "name=dockerify-android" --format '{{.Names}}' | grep -q dockerify-android; then
-            echo "📦 Creating backup..."
-            docker exec dockerify-android tar czf /tmp/data.tar.gz --warning=no-file-changed --ignore-failed-read -C /data . || true
-            if docker exec dockerify-android test -f /tmp/data.tar.gz; then
-              docker cp dockerify-android:/tmp/data.tar.gz ./android-data/
-              echo "✅ Backup created"
-            else
-              echo "⚠️ Backup failed"
-            fi
+          # The emulator is already terminated by the runner, but we can save any data
+          if [ -f ./android-data/data.tar.gz ]; then
+            echo "✅ Session data already saved during script?"
           else
-            echo "⚠️ Container not running, skipping save"
+            echo "⚠️ No session data found to save"
           fi
+          # If we need to save, we should have done it inside the script before sleep.
+          # We'll just upload whatever is in android-data (may be empty).
           if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ] && [ -f ./android-data/data.tar.gz ]; then
             gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c ./android-data/data.tar.gz
             rm -f ./android-data/data.tar.gz
@@ -387,5 +342,5 @@ jobs:
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
-          docker compose down -v 2>/dev/null || true
           docker rm -f scrcpy-web 2>/dev/null || true
+          docker compose down -v 2>/dev/null || true

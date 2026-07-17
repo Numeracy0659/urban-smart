@@ -1,4 +1,4 @@
-name: Rooted Android Cloud Phone (Redroid - Production)
+name: Redroid Android Cloud Phone (Production)
 on:
   push:
     branches: [ main ]
@@ -30,20 +30,22 @@ jobs:
     timeout-minutes: 355
 
     steps:
+      # ================================================================
+      # PHASE 1: ENVIRONMENT SETUP
+      # ================================================================
+
       - uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 1. Install ADB (Docker is pre-installed)
-      # ------------------------------------------------------------
-      - name: Install ADB
+      - name: Install ADB tools (Docker is pre‑installed)
         run: |
           sudo apt-get update
           sudo apt-get install -y android-tools-adb
 
-      # ------------------------------------------------------------
-      # 2. Session persistence
-      # ------------------------------------------------------------
-      - name: Restore session data (manual)
+      # ================================================================
+      # PHASE 2: SESSION RESTORATION
+      # ================================================================
+
+      - name: Restore session (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
         with:
@@ -51,7 +53,7 @@ jobs:
           path: ./android-data
         continue-on-error: true
 
-      - name: Restore session data (push)
+      - name: Restore session (push)
         if: github.event_name == 'push'
         uses: actions/download-artifact@v4
         with:
@@ -68,14 +70,15 @@ jobs:
             echo "✅ Decrypted"
           fi
 
-      # ------------------------------------------------------------
-      # 3. Start Redroid with proper configuration
-      # ------------------------------------------------------------
-      - name: Start Redroid
+      # ================================================================
+      # PHASE 3: START REDROID CONTAINER
+      # ================================================================
+
+      - name: Start Redroid container
         run: |
           mkdir -p ./android-data
 
-          # Ensure binder module is loaded
+          # Load binder kernel module (optional, improves performance)
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null || true
 
           docker run -d --name redroid \
@@ -90,15 +93,14 @@ jobs:
             androidboot.redroid_fps=60 \
             androidboot.use_memfd=true
 
-          echo "⏳ Waiting for Redroid to fully boot..."
-          # Wait for container to be healthy
+          echo "⏳ Waiting for Redroid to boot (90s max)..."
           sleep 30
 
-          # Reset ADB server to avoid version conflicts
+          # Reset ADB to avoid stale connections
           adb kill-server
           adb start-server
 
-          # Connect with retry
+          # Connect and verify
           for i in {1..30}; do
             if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
               echo "✅ ADB connected"
@@ -107,7 +109,6 @@ jobs:
             sleep 5
           done
 
-          # Wait for device to be fully ready
           for i in {1..30}; do
             if adb devices | grep -q "localhost:5555.*device"; then
               echo "✅ Device fully ready"
@@ -118,35 +119,35 @@ jobs:
 
           adb devices
 
-      # ------------------------------------------------------------
-      # 4. Enable root access (using su instead of adb root)
-      # ------------------------------------------------------------
-      - name: Enable system writes
+      # ================================================================
+      # PHASE 4: ROOT & SYSTEM WRITABLE (using su)
+      # ================================================================
+
+      - name: Enable system writes (root via su)
         run: |
           SERIAL="localhost:5555"
-          echo "🔑 Verifying device is ready..."
-
-          # Ensure device is ready
+          echo "🔑 Verifying device readiness..."
           if ! adb -s $SERIAL shell "echo ready" 2>/dev/null | grep -q "ready"; then
             echo "❌ Device not responding"
             exit 1
           fi
 
-          echo "🔧 Remounting system as writable using su..."
+          echo "🔧 Remounting system as writable..."
           adb -s $SERIAL shell "su -c 'mount -o rw,remount /'"
 
-          echo "📌 Verifying system is writable..."
+          echo "📌 Verifying write access..."
           if adb -s $SERIAL shell "su -c 'touch /system/test_write 2>/dev/null'"; then
             adb -s $SERIAL shell "su -c 'rm /system/test_write'"
-            echo "✅ System partition is writable!"
+            echo "✅ System partition is writable"
           else
-            echo "❌ System partition is still read-only. Exiting."
+            echo "❌ System still read‑only. Exiting."
             exit 1
           fi
 
-      # ------------------------------------------------------------
-      # 5. Spoof as Google Pixel 8 Pro (using su)
-      # ------------------------------------------------------------
+      # ================================================================
+      # PHASE 5: SPOOF PIXEL 8 PRO (build.prop only)
+      # ================================================================
+
       - name: Configure Pixel 8 Pro build.prop
         run: |
           SERIAL="localhost:5555"
@@ -159,11 +160,12 @@ jobs:
           adb -s $SERIAL shell "su -c \"echo 'ro.product.device=husky' >> /system/build.prop\""
           adb -s $SERIAL shell "su -c \"echo 'ro.build.product=husky' >> /system/build.prop\""
           adb -s $SERIAL shell "su -c 'chmod 644 /system/build.prop'"
-          echo "✅ Pixel 8 Pro profile applied."
+          echo "✅ Pixel 8 Pro profile applied"
 
-      # ------------------------------------------------------------
-      # 6. Install Frida server
-      # ------------------------------------------------------------
+      # ================================================================
+      # PHASE 6: INSTALL FRIDA SERVER
+      # ================================================================
+
       - name: Install Frida server
         run: |
           SERIAL="localhost:5555"
@@ -178,12 +180,13 @@ jobs:
           if adb -s $SERIAL shell "ps -A | grep frida-server" | grep -q frida; then
             echo "✅ Frida is running"
           else
-            echo "⚠️ Frida not detected, but continuing..."
+            echo "⚠️ Frida not detected, continuing..."
           fi
 
-      # ------------------------------------------------------------
-      # 7. Start scrcpy-web
-      # ------------------------------------------------------------
+      # ================================================================
+      # PHASE 7: SCRCPY‑WEB (browser UI)
+      # ================================================================
+
       - name: Start scrcpy-web
         run: |
           docker run -d --name scrcpy-web \
@@ -209,9 +212,10 @@ jobs:
           done
           docker logs scrcpy-web --tail 20
 
-      # ------------------------------------------------------------
-      # 8. NPort tunnel
-      # ------------------------------------------------------------
+      # ================================================================
+      # PHASE 8: NPORT TUNNEL (with auth)
+      # ================================================================
+
       - name: Start NPort tunnel
         id: tunnel
         run: |
@@ -231,10 +235,11 @@ jobs:
           TUNNEL_URL="https://urban-phone.nport.link"
           echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
-      # ------------------------------------------------------------
-      # 9. Display info
-      # ------------------------------------------------------------
-      - name: Display info
+      # ================================================================
+      # PHASE 9: DEPLOYMENT INFO
+      # ================================================================
+
+      - name: Display connection info
         run: |
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
@@ -243,7 +248,7 @@ jobs:
           echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
           echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
           echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"
-          echo "🔑 Root: Yes (Redroid with su)"
+          echo "🔑 Root: Yes (Redroid + su)"
           echo "🛠️  Frida: Running on port 27042"
           echo "================================================"
           echo "To use ADB locally:"
@@ -251,15 +256,17 @@ jobs:
           echo "  adb forward tcp:27042 tcp:27042"
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
-      # ------------------------------------------------------------
-      # 10. Keep alive
-      # ------------------------------------------------------------
+      # ================================================================
+      # PHASE 10: KEEP ALIVE
+      # ================================================================
+
       - name: Keep alive
         run: sleep 340m
 
-      # ------------------------------------------------------------
-      # 11. Save session
-      # ------------------------------------------------------------
+      # ================================================================
+      # PHASE 11: SESSION PERSISTENCE
+      # ================================================================
+
       - name: Save session
         if: always()
         run: |
@@ -275,6 +282,7 @@ jobs:
           else
             echo "⚠️ Container not running, skipping save"
           fi
+
           if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ] && [ -f ./android-data/data.tar.gz ]; then
             gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c ./android-data/data.tar.gz
             rm -f ./android-data/data.tar.gz
@@ -288,9 +296,10 @@ jobs:
           path: ./android-data/data.tar.gz*
           retention-days: 90
 
-      # ------------------------------------------------------------
-      # 12. Cleanup
-      # ------------------------------------------------------------
+      # ================================================================
+      # PHASE 12: CLEANUP
+      # ================================================================
+
       - name: Cleanup
         if: always()
         run: |

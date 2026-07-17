@@ -1,12 +1,18 @@
 name: Cloud Phone (Production)
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
     inputs:
       persist:
         description: 'Restore previous session?'
         required: true
+        default: 'yes'
+        type: choice
+        options:
+          - yes
+          - no
+      encrypt:
+        description: 'Encrypt session data?'
+        required: false
         default: 'yes'
         type: choice
         options:
@@ -22,43 +28,65 @@ jobs:
     timeout-minutes: 355
 
     steps:
-      # ------------------------------------------------------------
-      # 1. CHECKOUT
-      # ------------------------------------------------------------
       - uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. ENABLE HARDWARE ACCELERATION (KVM)
-      # ------------------------------------------------------------
+      # ------------------------------------------------------------------
+      # 1. Install tools (Docker is already present)
+      # ------------------------------------------------------------------
+      - name: Install ADB
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y android-tools-adb
+
+      # ------------------------------------------------------------------
+      # 2. Enable KVM for hardware acceleration (this makes it smooth)
+      # ------------------------------------------------------------------
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # ------------------------------------------------------------
-      # 3. CACHE OR CLEAR AVD (Persistence)
-      # ------------------------------------------------------------
-      - name: Clear AVD cache (if persist=no)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'no'
+      - name: Verify KVM
         run: |
-          rm -rf ~/.android/avd
-          echo "AVD cache cleared for fresh start"
+          sudo apt-get install -y cpu-checker
+          kvm-ok || echo "KVM not available, but continuing (will be slower)"
 
-      - name: Cache Android AVD
+      # ------------------------------------------------------------------
+      # 3. Session restore (with optional decryption)
+      # ------------------------------------------------------------------
+      - name: Restore session
+        if: github.event.inputs.persist == 'yes'
+        uses: actions/download-artifact@v4
+        with:
+          name: android-data
+          path: ./android-data
+        continue-on-error: true
+
+      - name: Decrypt session
+        if: github.event.inputs.encrypt == 'yes' && github.event.inputs.persist == 'yes'
+        run: |
+          if [ -f ./android-data/data.tar.gz.gpg ]; then
+            gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -d ./android-data/data.tar.gz.gpg | tar xz -C ./android-data
+            rm -f ./android-data/data.tar.gz.gpg
+            echo "✅ Session restored"
+          fi
+
+      # ------------------------------------------------------------------
+      # 4. Cache AVD (speeds up future runs)
+      # ------------------------------------------------------------------
+      - name: Cache AVD
         uses: actions/cache@v4
         id: avd-cache
         with:
           path: |
-            ~/.android/avd
+            ~/.android/avd/*
             ~/.android/adb*
           key: avd-${{ runner.os }}-api33-x86_64-google_apis
-          restore-keys: |
-            avd-${{ runner.os }}-api33-x86_64-
 
-      # ------------------------------------------------------------
-      # 4. START EMULATOR (Hardware-Accelerated)
-      # ------------------------------------------------------------
+      # ------------------------------------------------------------------
+      # 5. Start the emulator with KVM acceleration
+      # ------------------------------------------------------------------
       - name: Start Android emulator
         id: emulator
         uses: reactivecircus/android-emulator-runner@v2
@@ -69,7 +97,9 @@ jobs:
           profile: Pixel 6
           ram-size: 4096
           disk-size: 4096M
-          force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
+          force-avd-creation: false
+          disable-linux-hw-accel: false
+          emulator-boot-timeout: 600
           emulator-options: >-
             -no-snapshot-load
             -no-snapshot-save
@@ -82,113 +112,121 @@ jobs:
             -memory 4096
             -cores 4
           disable-animations: true
-          script: |
-            # This script runs after the emulator is fully booted.
-            # All commands run in a single shell (no variable loss).
-            set -e
-            echo "=========================================="
-            echo "📱 Emulator is ready. Starting services..."
-            echo "=========================================="
+          script: echo "Emulator ready"
 
-            SERIAL="emulator-5554"
+      # ------------------------------------------------------------------
+      # 6. Health check (ensure device is fully responsive)
+      # ------------------------------------------------------------------
+      - name: Wait for ADB
+        run: |
+          SERIAL="emulator-5554"
+          echo "⏳ Waiting for ADB to be ready..."
+          for i in {1..30}; do
+            if adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+              echo "✅ ADB ready"
+              break
+            fi
+            sleep 5
+          done
 
-            # --------------------------------------------------------
-            # 5. START SCRCPY-WEB (Browser UI)
-            # --------------------------------------------------------
-            echo "📱 Starting scrcpy-web container..."
-            docker run -d --name scrcpy-web \
-              --privileged \
-              -p 8000:8000 \
-              shmayro/scrcpy-web:latest \
-              sh -c "
-                for i in {1..30}; do
-                  if adb connect host.docker.internal:5555 2>/dev/null | grep -q 'connected'; then
-                    break
-                  fi
-                  sleep 2
-                done
-                npm start
-              "
+      # ------------------------------------------------------------------
+      # 7. Start ws-scrcpy-web (H.264 streaming)
+      # ------------------------------------------------------------------
+      - name: Start ws-scrcpy-web
+        run: |
+          docker run -d --name ws-scrcpy \
+            --privileged \
+            -p 8000:8000 \
+            bilbospocketses/ws-scrcpy-web:latest
 
-            # Wait for scrcpy-web to be ready
-            echo "⏳ Waiting for web server on port 8000..."
-            for i in {1..40}; do
-              if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
-                echo "✅ Web server ready"
-                break
-              fi
-              sleep 3
-            done
-            docker logs scrcpy-web --tail 10
+          echo "⏳ Waiting for ws-scrcpy-web..."
+          for i in {1..30}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
+              echo "✅ ws-scrcpy-web ready"
+              break
+            fi
+            sleep 3
+          done
+          docker logs ws-scrcpy --tail 20
 
-            # --------------------------------------------------------
-            # 6. START NPORT TUNNEL (Public Access)
-            # --------------------------------------------------------
-            echo "🔗 Starting NPort tunnel..."
-            AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
-            npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
-            NPORT_PID=$!
-            echo $NPORT_PID > nport.pid
+      # ------------------------------------------------------------------
+      # 8. NPort tunnel (with auth and HTTPS)
+      # ------------------------------------------------------------------
+      - name: Start NPort tunnel
+        id: tunnel
+        run: |
+          AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
+          echo "auth-pass=$AUTH_PASS" >> $GITHUB_OUTPUT
+          npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
+          echo $! > nport.pid
 
-            echo "⏳ Waiting for tunnel to be live..."
-            for i in {1..60}; do
-              if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
-                echo "✅ Tunnel live"
-                break
-              fi
-              sleep 5
-            done
-            TUNNEL_URL="https://urban-phone.nport.link"
+          echo "⏳ Waiting for tunnel to be live..."
+          for i in {1..60}; do
+            if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
+              echo "✅ Tunnel live"
+              break
+            fi
+            sleep 5
+          done
+          TUNNEL_URL="https://urban-phone.nport.link"
+          echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
-            # --------------------------------------------------------
-            # 7. DISPLAY CONNECTION INFO
-            # --------------------------------------------------------
-            echo "================================================"
-            echo "🌐 ANDROID PHONE IS READY"
-            echo "================================================"
-            echo "📱 Device: Google Pixel 6 (can be spoofed later)"
-            echo "📱 Web Interface: $TUNNEL_URL"
-            echo "🔑 Auth: admin:$AUTH_PASS"
-            echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
-            echo "================================================"
-            echo "To use ADB locally:"
-            echo "  adb connect $TUNNEL_URL:5555"
-            echo "  adb forward tcp:27042 tcp:27042"
-            echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
-            echo ""
-            echo "⏳ Keeping emulator alive for 340 minutes..."
-            echo "(You can connect now and use the phone.)"
+      # ------------------------------------------------------------------
+      # 9. Display connection info (visible to the user)
+      # ------------------------------------------------------------------
+      - name: Display info
+        run: |
+          echo "================================================"
+          echo "🌐 CLOUD PHONE IS READY"
+          echo "================================================"
+          echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
+          echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
+          echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"
+          echo "================================================"
+          echo "To use ADB locally:"
+          echo "  adb connect ${{ steps.tunnel.outputs.tunnel-url }}:5555"
 
-            # --------------------------------------------------------
-            # 8. KEEP ALIVE (Sleep until timeout)
-            # --------------------------------------------------------
-            sleep 340m
+      # ------------------------------------------------------------------
+      # 10. Keep alive (355 minutes, GitHub max is 360)
+      # ------------------------------------------------------------------
+      - name: Keep alive
+        run: sleep 355m
 
-            # --------------------------------------------------------
-            # 9. CLEANUP (when sleep ends)
-            # --------------------------------------------------------
-            kill $NPORT_PID 2>/dev/null || true
-            docker stop scrcpy-web 2>/dev/null || true
-            docker rm scrcpy-web 2>/dev/null || true
-            echo "✅ Cleanup done."
-
-      # ------------------------------------------------------------
-      # 10. SAVE SESSION (Artifact)
-      # ------------------------------------------------------------
-      - name: Save session artifact
+      # ------------------------------------------------------------------
+      # 11. Save session (encrypted and compressed)
+      # ------------------------------------------------------------------
+      - name: Save session
         if: always()
         run: |
-          if [ -d ~/.android/avd ]; then
-            echo "📦 Creating backup of emulator data..."
-            tar -czf avd-backup.tar.gz -C ~/.android avd
-            echo "✅ Backup created"
+          if docker ps -a --filter "name=android-emulator" --format '{{.Names}}' | grep -q android-emulator; then
+            echo "📦 Saving session..."
+            # Compress the entire emulator data directory
+            tar -czf data.tar.gz -C ./android-data .
+            if [ "${{ github.event.inputs.encrypt == 'yes' }}" == "true" ]; then
+              gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c data.tar.gz
+              mv data.tar.gz.gpg ./android-data/
+            else
+              mv data.tar.gz ./android-data/
+            fi
+            echo "✅ Session saved"
           else
-            echo "⚠️ No AVD data found to backup"
+            echo "⚠️ Emulator not running, skipping save"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload session artifact
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: avd-backup
-          path: avd-backup.tar.gz
-          retention-days: 7
+          name: android-data
+          path: ./android-data/data.tar.gz*
+          retention-days: 90
+
+      # ------------------------------------------------------------------
+      # 12. Cleanup (always runs)
+      # ------------------------------------------------------------------
+      - name: Cleanup
+        if: always()
+        run: |
+          kill $(cat nport.pid) 2>/dev/null || true
+          docker stop ws-scrcpy android-emulator 2>/dev/null || true
+          docker rm ws-scrcpy android-emulator 2>/dev/null || true

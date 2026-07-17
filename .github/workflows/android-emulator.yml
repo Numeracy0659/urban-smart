@@ -33,12 +33,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # ------------------------------------------------------------
-      # 1. Install Docker and ADB tools
+      # 1. Install ADB tools (Docker is pre-installed on runner)
       # ------------------------------------------------------------
-      - name: Install Docker and ADB
+      - name: Install ADB
         run: |
           sudo apt-get update
-          sudo apt-get install -y docker.io android-tools-adb
+          sudo apt-get install -y android-tools-adb
 
       # ------------------------------------------------------------
       # 2. Session persistence (restore from previous runs)

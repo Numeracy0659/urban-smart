@@ -1,4 +1,4 @@
-name: Rooted Android Cloud Phone (Professional)
+name: Rooted Android Cloud Phone (Redroid - Production)
 on:
   push:
     branches: [ main ]
@@ -32,33 +32,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ============================================================
-      # PHASE 1: KVM HARDWARE ACCELERATION
-      # ============================================================
-      - name: Enable KVM group permissions
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Verify KVM
-        run: |
-          ls -l /dev/kvm
-          sudo apt-get update
-          sudo apt-get install -y cpu-checker
-          kvm-ok
-
-      # ============================================================
-      # PHASE 2: INSTALL HOST ADB
-      # ============================================================
-      - name: Install ADB tools on host
+      # --------------------------------------------
+      # 1. Install Docker and ADB
+      # --------------------------------------------
+      - name: Install Docker and ADB
         run: |
           sudo apt-get update
-          sudo apt-get install -y android-tools-adb
+          sudo apt-get install -y docker.io android-tools-adb
 
-      # ============================================================
-      # PHASE 3: SESSION RESTORATION (if any)
-      # ============================================================
+      # --------------------------------------------
+      # 2. Session persistence
+      # --------------------------------------------
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -84,51 +68,46 @@ jobs:
             echo "✅ Decrypted"
           fi
 
-      # ============================================================
-      # PHASE 4: AVD CACHE
-      # ============================================================
-      - name: Cache AVD snapshot
-        uses: actions/cache@v4
-        id: avd-cache
-        with:
-          path: |
-            ~/.android/avd/*
-            ~/.android/adb*
-          key: avd-${{ runner.os }}-api33-x86_64-google_apis
-          restore-keys: |
-            avd-${{ runner.os }}-api33-x86_64-
-
-      # ============================================================
-      # PHASE 5: CREATE THE SETUP SCRIPT (single file)
-      # ============================================================
-      - name: Create setup script
+      # --------------------------------------------
+      # 3. Start Redroid container
+      # --------------------------------------------
+      - name: Start Redroid
         run: |
-          cat > setup.sh << 'SCRIPT'
-          #!/bin/bash
-          set -e
+          mkdir -p ./android-data
+          docker run -d --name redroid \
+            --privileged \
+            -v $(pwd)/android-data:/data \
+            -p 5555:5555 \
+            redroid/redroid:13.0.0-latest \
+            androidboot.redroid_gpu_mode=guest \
+            androidboot.redroid_width=1080 \
+            androidboot.redroid_height=1920 \
+            androidboot.redroid_dpi=420 \
+            androidboot.redroid_fps=60
 
-          SERIAL="emulator-5554"
+          echo "⏳ Waiting for Redroid to boot..."
+          for i in {1..60}; do
+            if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
+              echo "✅ Redroid ready"
+              break
+            fi
+            sleep 5
+          done
+          adb devices
 
-          echo "================================================"
-          echo "📱 EMULATOR IS READY. STARTING SETUP..."
-          echo "================================================"
-
-          # ------------------------------------------------------------------
-          # Elevate ADB to root
-          # ------------------------------------------------------------------
+      # --------------------------------------------
+      # 4. Elevate ADB to root and remount
+      # --------------------------------------------
+      - name: Enable system writes
+        run: |
+          SERIAL="localhost:5555"
           echo "🔑 Elevating ADB to root..."
           adb -s $SERIAL root
           sleep 3
 
-          # ------------------------------------------------------------------
-          # Remount system as writable (system is already writable due to -writable-system)
-          # ------------------------------------------------------------------
           echo "🔧 Remounting system as writable..."
-          adb -s $SERIAL shell mount -o rw,remount /
+          adb -s $SERIAL shell "mount -o rw,remount /"
 
-          # ------------------------------------------------------------------
-          # Verify writability
-          # ------------------------------------------------------------------
           echo "📌 Verifying system is writable..."
           if adb -s $SERIAL shell "touch /system/test_write 2>/dev/null"; then
             adb -s $SERIAL shell "rm /system/test_write"
@@ -138,23 +117,29 @@ jobs:
             exit 1
           fi
 
-          # ------------------------------------------------------------------
-          # Configure Pixel 8 Pro build.prop
-          # ------------------------------------------------------------------
+      # --------------------------------------------
+      # 5. Configure Pixel 8 Pro build.prop
+      # --------------------------------------------
+      - name: Configure Pixel 8 Pro build.prop
+        run: |
+          SERIAL="localhost:5555"
           echo "📱 Configuring device as Google Pixel 8 Pro..."
           adb -s $SERIAL shell cp /system/build.prop /system/build.prop.backup
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.brand=Google' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.manufacturer=Google' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.name=husky' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.product.device=husky' >> /system/build.prop\""
-          adb -s $SERIAL shell "su 0 sh -c \"echo 'ro.build.product=husky' >> /system/build.prop\""
+          adb -s $SERIAL shell "echo 'ro.product.model=Pixel 8 Pro' >> /system/build.prop"
+          adb -s $SERIAL shell "echo 'ro.product.brand=Google' >> /system/build.prop"
+          adb -s $SERIAL shell "echo 'ro.product.manufacturer=Google' >> /system/build.prop"
+          adb -s $SERIAL shell "echo 'ro.product.name=husky' >> /system/build.prop"
+          adb -s $SERIAL shell "echo 'ro.product.device=husky' >> /system/build.prop"
+          adb -s $SERIAL shell "echo 'ro.build.product=husky' >> /system/build.prop"
           adb -s $SERIAL shell chmod 644 /system/build.prop
           echo "✅ Pixel 8 Pro profile applied."
 
-          # ------------------------------------------------------------------
-          # Install Frida server
-          # ------------------------------------------------------------------
+      # --------------------------------------------
+      # 6. Install Frida server
+      # --------------------------------------------
+      - name: Install Frida server
+        run: |
+          SERIAL="localhost:5555"
           echo "🛠️ Installing Frida server..."
           curl -L -o frida-server-17.1.3-android-x86_64.xz \
             https://github.com/frida/frida/releases/download/17.1.3/frida-server-17.1.3-android-x86_64.xz
@@ -169,10 +154,11 @@ jobs:
             echo "⚠️ Frida not detected, but continuing..."
           fi
 
-          # ------------------------------------------------------------------
-          # Start scrcpy-web container
-          # ------------------------------------------------------------------
-          echo "📱 Starting scrcpy-web container..."
+      # --------------------------------------------
+      # 7. Start scrcpy-web
+      # --------------------------------------------
+      - name: Start scrcpy-web
+        run: |
           docker run -d --name scrcpy-web \
             --privileged \
             -p 8000:8000 \
@@ -186,7 +172,6 @@ jobs:
               done
               npm start
             "
-
           echo "⏳ Waiting for web server on port 8000..."
           for i in {1..40}; do
             if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
@@ -195,18 +180,17 @@ jobs:
             fi
             sleep 3
           done
-          echo "📋 scrcpy-web logs:"
-          docker logs scrcpy-web --tail 20
 
-          # ------------------------------------------------------------------
-          # Start NPort tunnel
-          # ------------------------------------------------------------------
-          echo "🔗 Starting NPort tunnel..."
+      # --------------------------------------------
+      # 8. NPort tunnel
+      # --------------------------------------------
+      - name: Start NPort tunnel
+        id: tunnel
+        run: |
           AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
+          echo "auth-pass=$AUTH_PASS" >> $GITHUB_OUTPUT
           npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
-          NPORT_PID=$!
-          echo $NPORT_PID > nport.pid
-
+          echo $! > nport.pid
           echo "⏳ Waiting for tunnel to be live..."
           for i in {1..60}; do
             if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
@@ -216,75 +200,51 @@ jobs:
             sleep 5
           done
           TUNNEL_URL="https://urban-phone.nport.link"
+          echo "tunnel-url=$TUNNEL_URL" >> $GITHUB_OUTPUT
 
-          # ------------------------------------------------------------------
-          # Display deployment info
-          # ------------------------------------------------------------------
+      # --------------------------------------------
+      # 9. Display info
+      # --------------------------------------------
+      - name: Display info
+        run: |
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
           echo "📱 Device: Google Pixel 8 Pro (spoofed)"
-          echo "📱 Web Interface: $TUNNEL_URL"
-          echo "🔑 Auth: admin:$AUTH_PASS"
-          echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
-          echo "🔑 Root: Yes (Magisk, ROOT_SETUP completed)"
-          echo "🛠️  Frida: Running on emulator (port 27042)"
+          echo "📱 Web Interface: ${{ steps.tunnel.outputs.tunnel-url }}"
+          echo "🔑 Auth: admin:${{ steps.tunnel.outputs.auth-pass }}"
+          echo "🔌 ADB (fallback): ${{ steps.tunnel.outputs.tunnel-url }}:5555"
+          echo "🔑 Root: Yes (Redroid root)"
+          echo "🛠️  Frida: Running on port 27042"
           echo "================================================"
           echo "To use ADB locally:"
-          echo "  adb connect $TUNNEL_URL:5555"
+          echo "  adb connect ${{ steps.tunnel.outputs.tunnel-url }}:5555"
           echo "  adb forward tcp:27042 tcp:27042"
           echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
 
-          # ------------------------------------------------------------------
-          # Keep alive (sleep until timeout)
-          # ------------------------------------------------------------------
-          echo "⏳ Keeping emulator alive for 340 minutes..."
-          sleep 340m
-          SCRIPT
+      # --------------------------------------------
+      # 10. Keep alive
+      # --------------------------------------------
+      - name: Keep alive
+        run: sleep 340m
 
-          chmod +x setup.sh
-
-      # ============================================================
-      # PHASE 6: START ANDROID EMULATOR AND RUN SETUP SCRIPT
-      # ============================================================
-      - name: Start Android emulator and run setup
-        id: emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 33
-          target: google_apis
-          arch: x86_64
-          profile: Nexus 5X
-          ram-size: 4096
-          disk-size: 4096M
-          force-avd-creation: false
-          disable-linux-hw-accel: false
-          emulator-boot-timeout: 600
-          emulator-options: >-
-            -no-snapshot-load
-            -no-snapshot-save
-            -no-window
-            -gpu swiftshader_indirect
-            -noaudio
-            -no-boot-anim
-            -camera-back none
-            -camera-front none
-            -memory 4096
-            -cores 4
-            -writable-system
-          disable-animations: true
-          script: bash setup.sh
-
-      # ============================================================
-      # PHASE 7: SAVE SESSION (if any data was persisted)
-      # ============================================================
+      # --------------------------------------------
+      # 11. Save session
+      # --------------------------------------------
       - name: Save session
         if: always()
         run: |
-          if [ -f ./android-data/data.tar.gz ]; then
-            echo "✅ Session data exists"
+          if docker ps -a --filter "name=redroid" --format '{{.Names}}' | grep -q redroid; then
+            echo "📦 Creating backup..."
+            docker exec redroid tar czf /tmp/data.tar.gz --warning=no-file-changed --ignore-failed-read -C /data . || true
+            if docker exec redroid test -f /tmp/data.tar.gz; then
+              docker cp redroid:/tmp/data.tar.gz ./android-data/
+              echo "✅ Backup created"
+            else
+              echo "⚠️ Backup failed"
+            fi
           else
-            echo "⚠️ No session data found to save"
+            echo "⚠️ Container not running, skipping save"
           fi
           if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ] && [ -f ./android-data/data.tar.gz ]; then
             gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c ./android-data/data.tar.gz
@@ -299,12 +259,12 @@ jobs:
           path: ./android-data/data.tar.gz*
           retention-days: 90
 
-      # ============================================================
-      # PHASE 8: CLEANUP
-      # ============================================================
+      # --------------------------------------------
+      # 12. Cleanup
+      # --------------------------------------------
       - name: Cleanup
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
-          docker rm -f scrcpy-web 2>/dev/null || true
-          docker compose down -v 2>/dev/null || true
+          docker stop redroid scrcpy-web 2>/dev/null || true
+          docker rm redroid scrcpy-web 2>/dev/null || true

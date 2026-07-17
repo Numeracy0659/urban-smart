@@ -114,58 +114,25 @@ jobs:
           echo "================================================"
 
           # ------------------------------------------------------------------
-          # Enable writable system (Official Android Sequence)
+          # Elevate ADB to root
           # ------------------------------------------------------------------
-          echo "🔧 Enabling writable system using official Android sequence..."
-
-          echo "📌 Step 1: Elevating ADB to root..."
+          echo "🔑 Elevating ADB to root..."
           adb -s $SERIAL root
           sleep 3
 
-          echo "📌 Step 2: Disabling verity..."
-          adb -s $SERIAL disable-verity || echo "Verity may already be disabled"
+          # ------------------------------------------------------------------
+          # Remount system as writable (system is already writable due to -writable-system)
+          # ------------------------------------------------------------------
+          echo "🔧 Remounting system as writable..."
+          adb -s $SERIAL shell mount -o rw,remount /
 
-          echo "📌 Step 3: Rebooting to apply verity changes..."
-          adb -s $SERIAL reboot
-
-          echo "📌 Step 4: Waiting for device to come back..."
-          sleep 15
-          adb kill-server
-          adb start-server
-          sleep 3
-
-          for i in {1..30}; do
-            if adb devices | grep -q "emulator-5554.*device"; then
-              echo "✅ Device reconnected"
-              break
-            fi
-            sleep 3
-          done
-
-          adb -s $SERIAL wait-for-device
-
-          for i in {1..60}; do
-            if adb -s $SERIAL shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
-              echo "✅ Device booted"
-              break
-            fi
-            sleep 5
-          done
-
-          echo "📌 Step 5: Re-establishing root..."
-          adb -s $SERIAL root
-          sleep 3
-
-          echo "📌 Step 6: Running adb remount..."
-          adb -s $SERIAL remount
-
-          echo "📌 Step 7: Direct su mount to activate overlay..."
-          adb -s $SERIAL shell "su 0 mount -o rw,remount /system"
-
-          echo "📌 Step 8: Verifying system is writable..."
+          # ------------------------------------------------------------------
+          # Verify writability
+          # ------------------------------------------------------------------
+          echo "📌 Verifying system is writable..."
           if adb -s $SERIAL shell "touch /system/test_write 2>/dev/null"; then
             adb -s $SERIAL shell "rm /system/test_write"
-            echo "✅ System partition is now writable!"
+            echo "✅ System partition is writable!"
           else
             echo "❌ System partition is still read-only. Exiting."
             exit 1
@@ -304,6 +271,7 @@ jobs:
             -camera-front none
             -memory 4096
             -cores 4
+            -writable-system
           disable-animations: true
           script: bash setup.sh
 
@@ -313,7 +281,6 @@ jobs:
       - name: Save session
         if: always()
         run: |
-          # The emulator is already terminated, but we might have saved data inside the script
           if [ -f ./android-data/data.tar.gz ]; then
             echo "✅ Session data exists"
           else

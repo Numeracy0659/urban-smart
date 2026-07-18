@@ -1,4 +1,4 @@
-name: Cloud Android Phone (Redroid - Production)
+name: Cloud Android Phone (Redroid - Full Screen)
 on:
   push:
     branches: [ main ]
@@ -46,10 +46,10 @@ jobs:
       - name: Load kernel modules
         run: |
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
-          sudo modprobe ashmem_linux || true  # ashmem is deprecated in newer kernels
+          sudo modprobe ashmem_linux || true
 
       # ==============================================================
-      # 3. Session restoration (persistence)
+      # 3. Session restoration
       # ==============================================================
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -92,18 +92,19 @@ jobs:
           echo "================================================"
 
           # --------------------------------------------
-          # Start Redroid container (Android 14)
+          # Start Redroid container (Android 14) with full‑screen resolution
+          # This mimics a Samsung S24 Ultra (1440x3040 @ 560 DPI)
           # --------------------------------------------
-          echo "🚀 Starting Redroid container..."
+          echo "🚀 Starting Redroid container with full‑screen resolution..."
           docker run -d --name redroid \
             --privileged \
             -v $(pwd)/android-data:/data \
             -p 5555:5555 \
             redroid/redroid:14.0.0_64only-latest \
             androidboot.redroid_gpu_mode=guest \
-            androidboot.redroid_width=1080 \
-            androidboot.redroid_height=2400 \
-            androidboot.redroid_dpi=420 \
+            androidboot.redroid_width=1440 \
+            androidboot.redroid_height=3040 \
+            androidboot.redroid_dpi=560 \
             androidboot.redroid_fps=60 \
             androidboot.use_memfd=true
 
@@ -113,7 +114,6 @@ jobs:
           echo "⏳ Waiting for Redroid to boot..."
           sleep 30
 
-          # Reset ADB and connect
           adb kill-server
           adb start-server
 
@@ -136,7 +136,7 @@ jobs:
           adb devices
 
           # --------------------------------------------
-          # Enable ARM translation (if needed)
+          # Enable ARM translation
           # --------------------------------------------
           echo "🔧 Enabling ARM translation..."
           adb -s localhost:5555 shell setprop persist.sys.nativebridge 1
@@ -196,22 +196,22 @@ jobs:
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
-          echo "📱 Android 14 (64-bit only)"
-          echo "📱 Screen: 1080x2400 @ 60fps"
+          echo "📱 Android 14 (64-bit) – Samsung S24 Ultra style"
+          echo "📱 Screen: 1440x3040 @ 560 DPI (full‑screen ready)"
           echo "📱 Web Interface: $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
           echo "🔌 ADB: $TUNNEL_URL:5555"
           echo "================================================"
           echo ""
-          echo "To control the phone:"
+          echo "📌 To get the full‑screen phone experience:"
           echo "  1. Open $TUNNEL_URL in your browser"
           echo "  2. Log in with admin:$AUTH_PASS"
-          echo "  3. The Android screen will appear"
+          echo "  3. Press F11 (or your browser's full‑screen button)"
+          echo "  4. The phone will fill the entire screen"
           echo ""
           echo "To use ADB locally:"
           echo "  adb connect $TUNNEL_URL:5555"
           echo "  scrcpy -s $TUNNEL_URL:5555"
-          echo ""
           echo "================================================"
 
           # --------------------------------------------
@@ -260,7 +260,7 @@ jobs:
           retention-days: 90
 
       # ==============================================================
-      # 7. Cleanup (always runs)
+      # 7. Cleanup
       # ==============================================================
       - name: Cleanup
         if: always()

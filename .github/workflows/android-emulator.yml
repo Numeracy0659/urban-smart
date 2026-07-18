@@ -1,4 +1,4 @@
-name: Cloud Android Phone (Smooth & Production)
+name: Cloud Android Phone (Redroid - Production)
 on:
   push:
     branches: [ main ]
@@ -33,24 +33,23 @@ jobs:
       - uses: actions/checkout@v4
 
       # ==============================================================
-      # 1. Enable KVM hardware acceleration (makes emulator smooth)
+      # 1. Install dependencies
       # ==============================================================
-      - name: Enable KVM group permissions
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      # ==============================================================
-      # 2. Install ADB tools (for debugging, optional)
-      # ==============================================================
-      - name: Install ADB
+      - name: Install ADB and kernel modules
         run: |
           sudo apt-get update
-          sudo apt-get install -y android-tools-adb
+          sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r)
 
       # ==============================================================
-      # 3. Session persistence: restore encrypted artifact if any
+      # 2. Load required kernel modules for Redroid
+      # ==============================================================
+      - name: Load kernel modules
+        run: |
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+          sudo modprobe ashmem_linux || true  # ashmem is deprecated in newer kernels
+
+      # ==============================================================
+      # 3. Session restoration (persistence)
       # ==============================================================
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -80,7 +79,7 @@ jobs:
           fi
 
       # ==============================================================
-      # 4. Create the setup script (runs inside the emulator runner)
+      # 4. Create the setup script
       # ==============================================================
       - name: Create setup script
         run: |
@@ -89,15 +88,62 @@ jobs:
           set -e
 
           echo "================================================"
-          echo "📱 EMULATOR IS READY – STARTING SERVICES"
+          echo "📱 STARTING REDROID CLOUD PHONE"
           echo "================================================"
 
-          # The emulator is already booted when this script runs.
-          # Wait a moment for ADB to be fully stable.
-          sleep 5
+          # --------------------------------------------
+          # Start Redroid container (Android 14)
+          # --------------------------------------------
+          echo "🚀 Starting Redroid container..."
+          docker run -d --name redroid \
+            --privileged \
+            -v $(pwd)/android-data:/data \
+            -p 5555:5555 \
+            redroid/redroid:14.0.0_64only-latest \
+            androidboot.redroid_gpu_mode=guest \
+            androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2400 \
+            androidboot.redroid_dpi=420 \
+            androidboot.redroid_fps=60 \
+            androidboot.use_memfd=true
 
           # --------------------------------------------
-          # Start scrcpy-web (browser UI) using host network
+          # Wait for Redroid to boot
+          # --------------------------------------------
+          echo "⏳ Waiting for Redroid to boot..."
+          sleep 30
+
+          # Reset ADB and connect
+          adb kill-server
+          adb start-server
+
+          for i in {1..30}; do
+            if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
+              echo "✅ ADB connected"
+              break
+            fi
+            sleep 5
+          done
+
+          for i in {1..30}; do
+            if adb -s localhost:5555 shell "echo ready" 2>/dev/null | grep -q "ready"; then
+              echo "✅ Device fully ready"
+              break
+            fi
+            sleep 5
+          done
+
+          adb devices
+
+          # --------------------------------------------
+          # Enable ARM translation (if needed)
+          # --------------------------------------------
+          echo "🔧 Enabling ARM translation..."
+          adb -s localhost:5555 shell setprop persist.sys.nativebridge 1
+          adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
+
+          # --------------------------------------------
+          # Start scrcpy-web (browser UI)
           # --------------------------------------------
           echo "📱 Starting scrcpy-web on port 8000..."
           docker run -d --name scrcpy-web \
@@ -114,7 +160,6 @@ jobs:
               npm start
             "
 
-          # Wait for web server to respond
           echo "⏳ Waiting for web server on port 8000..."
           for i in {1..40}; do
             if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
@@ -124,27 +169,26 @@ jobs:
             sleep 3
           done
 
-          # Show scrcpy-web logs for debugging
           docker logs scrcpy-web --tail 20
 
           # --------------------------------------------
-          # Start NPort tunnel with random authentication
+          # Start NPort tunnel with authentication
           # --------------------------------------------
           echo "🔗 Starting NPort tunnel..."
           AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
-          npx nport 8000 -s urban-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
+          npx nport 8000 -s cloud-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
           NPORT_PID=$!
           echo $NPORT_PID > nport.pid
 
           echo "⏳ Waiting for tunnel to be live..."
           for i in {1..60}; do
-            if curl -s -o /dev/null -w "%{http_code}" https://urban-phone.nport.link | grep -q "200\|401\|403"; then
+            if curl -s -o /dev/null -w "%{http_code}" https://cloud-phone.nport.link | grep -q "200\|401\|403"; then
               echo "✅ Tunnel live"
               break
             fi
             sleep 5
           done
-          TUNNEL_URL="https://urban-phone.nport.link"
+          TUNNEL_URL="https://cloud-phone.nport.link"
 
           # --------------------------------------------
           # Display connection information
@@ -152,53 +196,38 @@ jobs:
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
+          echo "📱 Android 14 (64-bit only)"
+          echo "📱 Screen: 1080x2400 @ 60fps"
           echo "📱 Web Interface: $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
-          echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
+          echo "🔌 ADB: $TUNNEL_URL:5555"
           echo "================================================"
+          echo ""
+          echo "To control the phone:"
+          echo "  1. Open $TUNNEL_URL in your browser"
+          echo "  2. Log in with admin:$AUTH_PASS"
+          echo "  3. The Android screen will appear"
+          echo ""
           echo "To use ADB locally:"
           echo "  adb connect $TUNNEL_URL:5555"
-          echo "  adb forward tcp:27042 tcp:27042"
-          echo "  frida -H localhost:27042 com.moon.tools -l scripts/hook_zapero.js"
+          echo "  scrcpy -s $TUNNEL_URL:5555"
+          echo ""
+          echo "================================================"
 
           # --------------------------------------------
           # Keep alive for the entire job duration
           # --------------------------------------------
-          echo "⏳ Keeping emulator alive for 340 minutes..."
+          echo "⏳ Keeping phone alive for 340 minutes..."
           sleep 340m
           SCRIPT
 
           chmod +x setup.sh
 
       # ==============================================================
-      # 5. Start the Android emulator with hardware acceleration
+      # 5. Run the setup script
       # ==============================================================
-      - name: Start Android emulator
-        id: emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 33
-          target: google_apis
-          arch: x86_64
-          profile: Nexus 5X
-          ram-size: 4096
-          disk-size: 4096M
-          force-avd-creation: false
-          disable-linux-hw-accel: false   # use KVM
-          emulator-boot-timeout: 600
-          emulator-options: >-
-            -no-snapshot-load
-            -no-snapshot-save
-            -no-window
-            -gpu swiftshader_indirect
-            -noaudio
-            -no-boot-anim
-            -camera-back none
-            -camera-front none
-            -memory 4096
-            -cores 4
-          disable-animations: true
-          script: bash setup.sh
+      - name: Run Redroid setup
+        run: bash setup.sh
 
       # ==============================================================
       # 6. Save session (encrypt and upload artifact)
@@ -206,7 +235,6 @@ jobs:
       - name: Save session
         if: always()
         run: |
-          # Only save if the emulator data directory exists and contains something
           if [ -d ./android-data ] && [ "$(ls -A ./android-data)" ]; then
             echo "📦 Creating backup..."
             tar -czf data.tar.gz -C ./android-data .
@@ -217,7 +245,7 @@ jobs:
               echo "✅ Backup encrypted"
             else
               mv data.tar.gz ./android-data/
-              echo "✅ Backup created (plain)"
+              echo "✅ Backup created"
             fi
           else
             echo "⚠️ No data to save"
@@ -238,6 +266,5 @@ jobs:
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
-          docker stop scrcpy-web 2>/dev/null || true
-          docker rm scrcpy-web 2>/dev/null || true
-          # The emulator is automatically killed by the runner action.
+          docker stop redroid scrcpy-web 2>/dev/null || true
+          docker rm redroid scrcpy-web 2>/dev/null || true

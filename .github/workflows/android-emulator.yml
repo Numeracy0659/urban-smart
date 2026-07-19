@@ -41,7 +41,7 @@ jobs:
           sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r)
 
       # ==============================================================
-      # 2. Load required kernel modules for Redroid
+      # 2. Load required kernel modules
       # ==============================================================
       - name: Load kernel modules
         run: |
@@ -92,19 +92,20 @@ jobs:
           echo "================================================"
 
           # --------------------------------------------
-          # Start Redroid container (Android 14) with full‑screen resolution
-          # This mimics a Samsung S24 Ultra (1440x3040 @ 560 DPI)
+          # Start Redroid container with OPTIMIZED settings
+          # Using a LOWER, MORE RELIABLE resolution
+          # Using 'host' GPU mode for better display
           # --------------------------------------------
-          echo "🚀 Starting Redroid container with full‑screen resolution..."
+          echo "🚀 Starting Redroid container..."
           docker run -d --name redroid \
             --privileged \
             -v $(pwd)/android-data:/data \
             -p 5555:5555 \
             redroid/redroid:14.0.0_64only-latest \
-            androidboot.redroid_gpu_mode=guest \
-            androidboot.redroid_width=1440 \
-            androidboot.redroid_height=3040 \
-            androidboot.redroid_dpi=560 \
+            androidboot.redroid_gpu_mode=host \
+            androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2400 \
+            androidboot.redroid_dpi=420 \
             androidboot.redroid_fps=60 \
             androidboot.use_memfd=true
 
@@ -114,6 +115,7 @@ jobs:
           echo "⏳ Waiting for Redroid to boot..."
           sleep 30
 
+          # Reset ADB and connect
           adb kill-server
           adb start-server
 
@@ -196,18 +198,23 @@ jobs:
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
-          echo "📱 Android 14 (64-bit) – Samsung S24 Ultra style"
-          echo "📱 Screen: 1440x3040 @ 560 DPI (full‑screen ready)"
+          echo "📱 Android 14 (64-bit)"
+          echo "📱 Screen: 1080x2400 @ 60fps"
           echo "📱 Web Interface: $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
           echo "🔌 ADB: $TUNNEL_URL:5555"
           echo "================================================"
           echo ""
-          echo "📌 To get the full‑screen phone experience:"
+          echo "📌 To get the full-screen phone experience:"
           echo "  1. Open $TUNNEL_URL in your browser"
           echo "  2. Log in with admin:$AUTH_PASS"
-          echo "  3. Press F11 (or your browser's full‑screen button)"
+          echo "  3. Press F11 (or your browser's full-screen button)"
           echo "  4. The phone will fill the entire screen"
+          echo ""
+          echo "📌 Keyboard shortcuts for scrcpy:"
+          echo "  Alt+F - Toggle fullscreen"
+          echo "  Alt+R - Rotate the device"
+          echo "  Alt+Up/Down - Increase/decrease volume"
           echo ""
           echo "To use ADB locally:"
           echo "  adb connect $TUNNEL_URL:5555"

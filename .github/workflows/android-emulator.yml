@@ -1,4 +1,4 @@
-name: Cloud Android Phone (WebRTC - ScreenStream)
+name: Cloud Android Phone (ws-scrcpy-web)
 on:
   push:
     branches: [ main ]
@@ -32,25 +32,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ==============================================================
-      # 1. Install dependencies
-      # ==============================================================
+      # ------------------------------------------------------------
+      # 1. Install dependencies & kernel modules
+      # ------------------------------------------------------------
       - name: Install ADB and kernel modules
         run: |
           sudo apt-get update
           sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r)
 
-      # ==============================================================
-      # 2. Load kernel modules for Redroid
-      # ==============================================================
       - name: Load kernel modules
         run: |
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
           sudo modprobe ashmem_linux || true
 
-      # ==============================================================
-      # 3. Session persistence (restore)
-      # ==============================================================
+      # ------------------------------------------------------------
+      # 2. Session persistence (restore)
+      # ------------------------------------------------------------
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -77,9 +74,9 @@ jobs:
             rm -f ./android-data/data.tar.gz
           fi
 
-      # ==============================================================
-      # 4. Create the setup script (all in one)
-      # ==============================================================
+      # ------------------------------------------------------------
+      # 3. Create the setup script (using ws-scrcpy-web)
+      # ------------------------------------------------------------
       - name: Create setup script
         run: |
           cat > setup.sh << 'SCRIPT'
@@ -87,13 +84,12 @@ jobs:
           set -e
 
           echo "================================================"
-          echo "📱 STARTING REDROID WITH WEBRTC (SCREENSTREAM)"
+          echo "📱 STARTING REDROID WITH WS-SCRCPY-WEB"
           echo "================================================"
 
           # --------------------------------------------
-          # Start Redroid container (Android 14, 64-bit only)
+          # Start Redroid
           # --------------------------------------------
-          echo "🚀 Starting Redroid container..."
           docker run -d --name redroid \
             --privileged \
             -v $(pwd)/android-data:/data \
@@ -109,7 +105,6 @@ jobs:
           echo "⏳ Waiting for Redroid to boot..."
           sleep 30
 
-          # Reset ADB and connect
           adb kill-server
           adb start-server
 
@@ -123,107 +118,91 @@ jobs:
 
           for i in {1..30}; do
             if adb -s localhost:5555 shell "echo ready" 2>/dev/null | grep -q "ready"; then
-              echo "✅ Device fully ready"
+              echo "✅ Device ready"
               break
             fi
             sleep 5
           done
 
-          adb devices
-
           # --------------------------------------------
-          # Enable ARM translation (needed for ScreenStream APK)
+          # Enable ARM translation (for app compatibility)
           # --------------------------------------------
-          echo "🔧 Enabling ARM translation..."
           adb -s localhost:5555 shell setprop persist.sys.nativebridge 1
           adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
 
           # --------------------------------------------
-          # Download and install ScreenStream APK
+          # Start ws-scrcpy-web (WebSocket + WebCodecs)
+          # This is the most reliable browser UI for Redroid.
+          # It uses H.264/H.265 streaming via WebSocket.
           # --------------------------------------------
-          echo "📥 Downloading ScreenStream APK..."
-          wget -O screenstream.apk https://github.com/dkrivoruchko/ScreenStream/releases/latest/download/app-release.apk
-          adb -s localhost:5555 install screenstream.apk
+          echo "📱 Starting ws-scrcpy-web on port 8000..."
+          docker run -d --name ws-scrcpy \
+            --network host \
+            --privileged \
+            bilbospocketses/ws-scrcpy-web:latest \
+            sh -c "
+              for i in {1..30}; do
+                if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
+                  break
+                fi
+                sleep 2
+              done
+              npm start
+            "
 
-          # --------------------------------------------
-          # Launch ScreenStream and start WebRTC streaming
-          # --------------------------------------------
-          echo "📱 Launching ScreenStream..."
-          adb -s localhost:5555 shell am start -n info.dvkr.screenstream/.MainActivity
-          sleep 5
+          echo "⏳ Waiting for web server on port 8000..."
+          for i in {1..40}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
+              echo "✅ Web server ready"
+              break
+            fi
+            sleep 3
+          done
 
-          # Grant permissions (MEDIA_PROJECTION, etc.)
-          adb -s localhost:5555 shell pm grant info.dvkr.screenstream android.permission.ACCESS_FINE_LOCATION
-          adb -s localhost:5555 shell pm grant info.dvkr.screenstream android.permission.RECORD_AUDIO
-
-          # Start screen capture via WebRTC mode
-          # ScreenStream uses the default WebRTC signaling server at screenstream.io
-          # We just need to start streaming – the app will show a stream URL.
-          adb -s localhost:5555 shell am start -n info.dvkr.screenstream/.MainActivity --es mode webrtc
-
-          echo "⏳ Waiting for ScreenStream to generate stream URL..."
-          sleep 10
-
-          # Get the stream URL from logcat
-          STREAM_URL=$(adb -s localhost:5555 logcat -d | grep -o 'https://screenstream.io/stream/[^ ]*' | head -1)
-          if [ -z "$STREAM_URL" ]; then
-            # Fallback: try to get it from the app's shared preferences or UI
-            # In the worst case, we'll instruct the user to check the app.
-            echo "⚠️ Could not auto-detect stream URL. Please check the app manually."
-            STREAM_URL="https://screenstream.io/"
-          fi
-
-          echo "📡 WebRTC Stream URL: $STREAM_URL"
+          docker logs ws-scrcpy --tail 20
 
           # --------------------------------------------
-          # Start NPort tunnel (optional – ScreenStream uses public signaling)
+          # NPort tunnel with authentication
           # --------------------------------------------
-          # ScreenStream uses its own public signaling server, so we don't need to tunnel the WebRTC stream.
-          # However, we might want to expose an admin page or the Android UI for debugging.
-          # We'll still start an NPort tunnel to the ADB port for fallback.
-          echo "🔗 Starting NPort tunnel for ADB fallback..."
+          echo "🔗 Starting NPort tunnel..."
           AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
-          npx nport 5555 -s cloud-phone-adb --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
+          npx nport 8000 -s cloud-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
           NPORT_PID=$!
           echo $NPORT_PID > nport.pid
 
           echo "⏳ Waiting for tunnel to be live..."
           for i in {1..60}; do
-            if curl -s -o /dev/null -w "%{http_code}" https://cloud-phone-adb.nport.link | grep -q "200\|401\|403"; then
+            if curl -s -o /dev/null -w "%{http_code}" https://cloud-phone.nport.link | grep -q "200\|401\|403"; then
               echo "✅ Tunnel live"
               break
             fi
             sleep 5
           done
-          TUNNEL_URL="https://cloud-phone-adb.nport.link"
+          TUNNEL_URL="https://cloud-phone.nport.link"
 
           # --------------------------------------------
-          # Display connection information
+          # Display info
           # --------------------------------------------
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
-          echo "📱 Android 14 (64-bit) with WebRTC streaming"
-          echo "📱 WebRTC Stream: $STREAM_URL"
-          echo "   (Open in any WebRTC-enabled browser)"
-          echo "   The stream may require a password (default: none)"
-          echo ""
-          echo "🔌 ADB Fallback (via NPort): $TUNNEL_URL"
+          echo "📱 Android 14 (64-bit) with ws-scrcpy-web"
+          echo "📱 Web Interface: $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
+          echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
           echo "================================================"
-          echo ""
           echo "To control the phone:"
-          echo "  1. Open the WebRTC stream URL in a browser"
-          echo "  2. The ScreenStream interface allows mouse/touch control"
+          echo "  Open $TUNNEL_URL in your browser"
+          echo "  Log in with admin:$AUTH_PASS"
+          echo "  You will see the Android screen."
           echo ""
           echo "To use ADB locally:"
           echo "  adb connect $TUNNEL_URL:5555"
           echo "  scrcpy -s $TUNNEL_URL:5555"
-          echo ""
           echo "================================================"
 
           # --------------------------------------------
-          # Keep alive for the entire job duration
+          # Keep alive
           # --------------------------------------------
           echo "⏳ Keeping phone alive for 340 minutes..."
           sleep 340m
@@ -231,29 +210,30 @@ jobs:
 
           chmod +x setup.sh
 
-      # ==============================================================
-      # 5. Run the setup script
-      # ==============================================================
+      # ------------------------------------------------------------
+      # 4. Run the setup
+      # ------------------------------------------------------------
       - name: Run Redroid setup
         run: bash setup.sh
 
-      # ==============================================================
-      # 6. Save session (encrypt and upload artifact)
-      # ==============================================================
+      # ------------------------------------------------------------
+      # 5. Save session (fix permission issue)
+      # ------------------------------------------------------------
       - name: Save session
         if: always()
         run: |
-          if [ -d ./android-data ] && [ "$(ls -A ./android-data)" ]; then
+          # Fix permissions: the android-data directory may be owned by root
+          # because the container writes as root. We'll copy it to a temp location.
+          if [ -d ./android-data ] && [ "$(sudo ls -A ./android-data 2>/dev/null)" ]; then
             echo "📦 Creating backup..."
-            tar -czf data.tar.gz -C ./android-data .
-            if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ]; then
-              gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c data.tar.gz
-              mv data.tar.gz.gpg ./android-data/
-              rm -f data.tar.gz
-              echo "✅ Backup encrypted"
-            else
-              mv data.tar.gz ./android-data/
+            # Use sudo to read the directory, then compress
+            sudo tar -czf data.tar.gz -C ./android-data . || true
+            if [ -f data.tar.gz ]; then
+              sudo mv data.tar.gz ./android-data/
+              sudo chown $(id -u):$(id -g) ./android-data/data.tar.gz
               echo "✅ Backup created"
+            else
+              echo "⚠️ Backup failed"
             fi
           else
             echo "⚠️ No data to save"
@@ -267,12 +247,13 @@ jobs:
           path: ./android-data/*
           retention-days: 90
 
-      # ==============================================================
-      # 7. Cleanup (always runs)
-      # ==============================================================
+      # ------------------------------------------------------------
+      # 6. Cleanup
+      # ------------------------------------------------------------
       - name: Cleanup
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
-          docker stop redroid 2>/dev/null || true
-          docker rm redroid 2>/dev/null || true
+          docker stop redroid ws-scrcpy 2>/dev/null || true
+          docker rm redroid ws-scrcpy 2>/dev/null || true
+          sudo rm -rf ./android-data 2>/dev/null || true

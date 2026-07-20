@@ -32,30 +32,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ================================================================
+      # ------------------------------------------------------------
       # 1. Install system dependencies
-      # ================================================================
+      # ------------------------------------------------------------
       - name: Install ADB and kernel modules
         run: |
           sudo apt-get update
           sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r)
 
-      - name: Load kernel modules
+      - name: Load kernel modules for Redroid
         run: |
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
           sudo modprobe ashmem_linux || true
 
-      # ================================================================
+      # ------------------------------------------------------------
       # 2. Prepare data directory with correct permissions
-      # ================================================================
+      # ------------------------------------------------------------
       - name: Create data directory
         run: |
           mkdir -p ./android-data
           chmod 777 ./android-data
 
-      # ================================================================
-      # 3. Session restoration
-      # ================================================================
+      # ------------------------------------------------------------
+      # 3. Session persistence (restore encrypted artifact)
+      # ------------------------------------------------------------
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
         uses: actions/download-artifact@v4
@@ -83,9 +83,9 @@ jobs:
             echo "✅ Session restored and decrypted"
           fi
 
-      # ================================================================
-      # 4. Setup script (Redroid + ScreenStream WebRTC)
-      # ================================================================
+      # ------------------------------------------------------------
+      # 4. Create the setup script
+      # ------------------------------------------------------------
       - name: Create setup script
         run: |
           cat > setup.sh << 'SCRIPT'
@@ -113,17 +113,14 @@ jobs:
             androidboot.use_memfd=true
 
           # ------------------------------------------------------------------
-          # Wait for Redroid to boot
+          # Wait for Redroid to boot (with robust ADB recovery)
           # ------------------------------------------------------------------
-          echo "⏳ Waiting for Redroid to boot (up to 120 seconds)..."
+          echo "⏳ Waiting for Redroid to boot..."
           sleep 30
 
-          # Reset ADB and connect
           adb kill-server
           adb start-server
 
-          # Connect and wait for device to appear
-          echo "⏳ Connecting ADB..."
           for i in {1..30}; do
             if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
               echo "✅ ADB connected"
@@ -132,16 +129,13 @@ jobs:
             sleep 5
           done
 
-          # Wait for device to become online (not offline)
-          echo "⏳ Waiting for device to become online..."
           for i in {1..30}; do
             STATE=$(adb devices | grep -E "localhost:5555\s+(\w+)" | awk '{print $2}')
             if [ "$STATE" = "device" ]; then
-              echo "✅ Device is online"
+              echo "✅ Device online"
               break
             else
               echo "⏳ Device state: $STATE (attempt $i/30)"
-              # Try to reconnect if still offline
               if [ "$STATE" = "offline" ]; then
                 adb reconnect
                 sleep 3
@@ -150,8 +144,6 @@ jobs:
             fi
           done
 
-          # Wait for boot completion (sys.boot_completed = 1)
-          echo "⏳ Waiting for boot completion..."
           for i in {1..60}; do
             if adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
               echo "✅ Boot completed"
@@ -160,9 +152,8 @@ jobs:
             sleep 5
           done
 
-          # Verify device is responsive
           if ! adb -s localhost:5555 shell "echo ready" 2>/dev/null | grep -q "ready"; then
-            echo "❌ Device still not responsive. Dumping logs..."
+            echo "❌ Device not responsive. Dumping logs..."
             docker logs redroid
             exit 1
           fi
@@ -170,7 +161,7 @@ jobs:
           adb devices
 
           # ------------------------------------------------------------------
-          # Enable ARM translation (for app compatibility)
+          # Enable ARM translation
           # ------------------------------------------------------------------
           echo "🔧 Enabling ARM translation..."
           adb -s localhost:5555 shell setprop persist.sys.nativebridge 1
@@ -193,28 +184,23 @@ jobs:
           # ------------------------------------------------------------------
           echo "📱 Launching ScreenStream in Global (WebRTC) mode..."
 
-          # Generate stream credentials
           STREAM_NAME="cloud-phone-$(date +%s)"
           STREAM_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
 
-          # Try deep link method
           adb -s localhost:5555 shell am start \
             -a android.intent.action.VIEW \
             -d "screenstream://start?mode=webrtc&name=$STREAM_NAME&password=$STREAM_PASS" || true
 
-          # If deep link fails, use UI automation
           if [ $? -ne 0 ]; then
             echo "⚠️ Deep link failed, using UI automation..."
             adb -s localhost:5555 shell am start -n info.dvkr.screenstream/.MainActivity
             sleep 5
-            # Tap "Global (WebRTC)" button (approximate coordinates for 1080x2400)
             adb -s localhost:5555 shell input tap 540 1200
             sleep 2
-            # Type stream name
             adb -s localhost:5555 shell input text "$STREAM_NAME"
-            adb -s localhost:5555 shell input keyevent 61  # Tab to password field
+            adb -s localhost:5555 shell input keyevent 61
             adb -s localhost:5555 shell input text "$STREAM_PASS"
-            adb -s localhost:5555 shell input keyevent 66  # Enter to start
+            adb -s localhost:5555 shell input keyevent 66
           fi
 
           echo "✅ ScreenStream started in Global (WebRTC) mode"
@@ -254,7 +240,6 @@ jobs:
           echo "   Use: adb connect $TUNNEL_URL:443"
           echo "================================================"
 
-          # Save credentials for the workflow output
           echo "STREAM_NAME=$STREAM_NAME" >> /tmp/stream_info
           echo "STREAM_PASS=$STREAM_PASS" >> /tmp/stream_info
           echo "AUTH_PASS=$AUTH_PASS" >> /tmp/stream_info
@@ -269,24 +254,21 @@ jobs:
 
           chmod +x setup.sh
 
-      # ================================================================
+      # ------------------------------------------------------------
       # 5. Execute the setup script
-      # ================================================================
+      # ------------------------------------------------------------
       - name: Run setup
         run: bash setup.sh
 
-      # ================================================================
+      # ------------------------------------------------------------
       # 6. Save session (encrypt and upload artifact)
-      # ================================================================
+      # ------------------------------------------------------------
       - name: Save session
         if: always()
         run: |
-          # Fix permissions on the data directory before tar
           if [ -d ./android-data ] && [ "$(ls -A ./android-data 2>/dev/null)" ]; then
             echo "📦 Creating backup..."
-            # Use sudo to read the directory if needed
             sudo tar -czf data.tar.gz -C ./android-data . || true
-            # Change ownership to runner for artifact upload
             sudo chown -R $(whoami) ./android-data
             if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ] && [ -f data.tar.gz ]; then
               gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c data.tar.gz
@@ -311,12 +293,13 @@ jobs:
           path: ./android-data/*
           retention-days: 90
 
-      # ================================================================
+      # ------------------------------------------------------------
       # 7. Cleanup
-      # ================================================================
+      # ------------------------------------------------------------
       - name: Cleanup
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
           docker stop redroid 2>/dev/null || true
           docker rm redroid 2>/dev/null || true
+          rm -rf ./android-data 2>/dev/null || true

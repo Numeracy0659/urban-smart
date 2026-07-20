@@ -1,4 +1,4 @@
-name: Cloud Android Phone (Redroid - Full Screen)
+name: Cloud Android Phone (Full Screen - Production)
 on:
   push:
     branches: [ main ]
@@ -41,7 +41,7 @@ jobs:
           sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r)
 
       # ==============================================================
-      # 2. Load required kernel modules
+      # 2. Load required kernel modules for Redroid
       # ==============================================================
       - name: Load kernel modules
         run: |
@@ -92,9 +92,7 @@ jobs:
           echo "================================================"
 
           # --------------------------------------------
-          # Start Redroid container with OPTIMIZED settings
-          # Using a LOWER, MORE RELIABLE resolution
-          # Using 'host' GPU mode for better display
+          # Start Redroid container
           # --------------------------------------------
           echo "🚀 Starting Redroid container..."
           docker run -d --name redroid \
@@ -115,7 +113,6 @@ jobs:
           echo "⏳ Waiting for Redroid to boot..."
           sleep 30
 
-          # Reset ADB and connect
           adb kill-server
           adb start-server
 
@@ -145,22 +142,19 @@ jobs:
           adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
 
           # --------------------------------------------
-          # Start scrcpy-web (browser UI)
+          # Install ScreenStream (WebRTC full-screen solution)
           # --------------------------------------------
-          echo "📱 Starting scrcpy-web on port 8000..."
-          docker run -d --name scrcpy-web \
+          echo "📱 Installing ScreenStream for WebRTC streaming..."
+          adb -s localhost:5555 install -r https://github.com/dkrivoruchko/ScreenStream/releases/latest/download/app-release.apk || echo "Download failed, continuing..."
+
+          # --------------------------------------------
+          # Start ws-scrcpy-web (modern successor)
+          # --------------------------------------------
+          echo "📱 Starting ws-scrcpy-web on port 8000..."
+          docker run -d --name ws-scrcpy-web \
             --network host \
             --privileged \
-            shmayro/scrcpy-web:latest \
-            sh -c "
-              for i in {1..30}; do
-                if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
-                  break
-                fi
-                sleep 2
-              done
-              npm start
-            "
+            bilbospocketses/ws-scrcpy-web:latest
 
           echo "⏳ Waiting for web server on port 8000..."
           for i in {1..40}; do
@@ -171,7 +165,7 @@ jobs:
             sleep 3
           done
 
-          docker logs scrcpy-web --tail 20
+          docker logs ws-scrcpy-web --tail 20
 
           # --------------------------------------------
           # Start NPort tunnel with authentication
@@ -205,20 +199,23 @@ jobs:
           echo "🔌 ADB: $TUNNEL_URL:5555"
           echo "================================================"
           echo ""
-          echo "📌 To get the full-screen phone experience:"
+          echo "📌 For FULL-SCREEN phone experience:"
           echo "  1. Open $TUNNEL_URL in your browser"
           echo "  2. Log in with admin:$AUTH_PASS"
-          echo "  3. Press F11 (or your browser's full-screen button)"
-          echo "  4. The phone will fill the entire screen"
+          echo "  3. The ws-scrcpy-web interface will load"
+          echo "  4. Click the full-screen button or press F11"
+          echo "  5. The phone will fill the entire screen"
           echo ""
-          echo "📌 Keyboard shortcuts for scrcpy:"
-          echo "  Alt+F - Toggle fullscreen"
-          echo "  Alt+R - Rotate the device"
-          echo "  Alt+Up/Down - Increase/decrease volume"
+          echo "📌 Alternative: Use ScreenStream (WebRTC)"
+          echo "  1. On the Android device, open ScreenStream"
+          echo "  2. Start Global mode (WebRTC)"
+          echo "  3. Open the WebRTC URL in your browser"
+          echo "  4. The stream will be full-screen and low-latency"
           echo ""
-          echo "To use ADB locally:"
-          echo "  adb connect $TUNNEL_URL:5555"
-          echo "  scrcpy -s $TUNNEL_URL:5555"
+          echo "📌 Keyboard shortcuts for ws-scrcpy-web:"
+          echo "  Full-screen: F11 or browser full-screen button"
+          echo "  Rotate: Alt+R"
+          echo "  Volume: Alt+Up/Alt+Down"
           echo "================================================"
 
           # --------------------------------------------
@@ -273,5 +270,5 @@ jobs:
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
-          docker stop redroid scrcpy-web 2>/dev/null || true
-          docker rm redroid scrcpy-web 2>/dev/null || true
+          docker stop redroid ws-scrcpy-web 2>/dev/null || true
+          docker rm redroid ws-scrcpy-web 2>/dev/null || true

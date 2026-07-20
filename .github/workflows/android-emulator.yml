@@ -35,10 +35,11 @@ jobs:
       # ------------------------------------------------------------
       # 1. Install dependencies
       # ------------------------------------------------------------
-      - name: Install ADB and kernel modules
+      - name: Install ADB, kernel modules, and gdown
         run: |
           sudo apt-get update
-          sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r)
+          sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r) python3-pip
+          pip3 install gdown
 
       - name: Load kernel modules
         run: |
@@ -75,7 +76,17 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 3. Create the setup script (ScreenStream WebRTC)
+      # 3. Download ScreenStream APK from Google Drive
+      # ------------------------------------------------------------
+      - name: Download ScreenStream APK from Google Drive
+        run: |
+          echo "📥 Downloading ScreenStream APK from Google Drive..."
+          FILE_ID="1wRaNK0we7BMAXX2LcHdwCN5a0_gK-79o"
+          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O screenstream.apk
+          ls -lh screenstream.apk
+
+      # ------------------------------------------------------------
+      # 4. Create the setup script
       # ------------------------------------------------------------
       - name: Create setup script
         run: |
@@ -131,35 +142,9 @@ jobs:
           adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
 
           # --------------------------------------------
-          # Download and install ScreenStream APK
-          # Source: APKPure (allows automated downloads)
+          # Install ScreenStream APK (downloaded from Google Drive)
           # --------------------------------------------
-          echo "📥 Downloading ScreenStream APK from APKPure..."
-          wget -O screenstream.apk \
-            "https://apkpure.com/screenstream/info.dvkr.screenstream/download/4.4.2?fcid=7f9a3b5c-4e2d-4f1a-8b3c-9d4e5f6a7b8c"
-
-          # Fallback: APKCombo if APKPure fails
-          if [ ! -f screenstream.apk ] || [ $(stat -c%s screenstream.apk) -lt 1000000 ]; then
-            echo "⚠️ APKPure failed, trying APKCombo..."
-            wget -O screenstream.apk \
-              "https://apkcombo.com/screenstream/info.dvkr.screenstream/download/apk"
-          fi
-
-          # Fallback: direct APKMirror with proper User-Agent
-          if [ ! -f screenstream.apk ] || [ $(stat -c%s screenstream.apk) -lt 1000000 ]; then
-            echo "⚠️ APKCombo failed, trying APKMirror with browser User-Agent..."
-            wget -O screenstream.apk \
-              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-              "https://www.apkmirror.com/wp-content/themes/APKMirror/download.php?id=3238822"
-          fi
-
-          # Final check
-          if [ ! -f screenstream.apk ] || [ $(stat -c%s screenstream.apk) -lt 1000000 ]; then
-            echo "❌ All download methods failed. Exiting."
-            exit 1
-          fi
-
-          echo "✅ APK downloaded successfully ($(stat -c%s screenstream.apk) bytes)"
+          echo "📥 Installing ScreenStream APK..."
           adb -s localhost:5555 install screenstream.apk
 
           # --------------------------------------------
@@ -185,7 +170,7 @@ jobs:
             echo "⚠️ Could not auto-detect stream URL. Please check the app manually."
             STREAM_URL="https://screenstream.io/"
           else
-            echo "✅ WebRTC Stream URL detected: $STREAM_URL"
+            echo "✅ WebRTC Stream URL: $STREAM_URL"
           fi
 
           # --------------------------------------------
@@ -216,7 +201,6 @@ jobs:
           echo "📱 Android 14 (64-bit) with WebRTC streaming"
           echo "📱 WebRTC Stream: $STREAM_URL"
           echo "   (Open in any WebRTC-enabled browser)"
-          echo "   The stream may require a password"
           echo ""
           echo "🔌 ADB Fallback (via NPort): $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
@@ -238,13 +222,13 @@ jobs:
           chmod +x setup.sh
 
       # ------------------------------------------------------------
-      # 4. Run the setup
+      # 5. Run the setup
       # ------------------------------------------------------------
       - name: Run Redroid setup
         run: bash setup.sh
 
       # ------------------------------------------------------------
-      # 5. Save session
+      # 6. Save session
       # ------------------------------------------------------------
       - name: Save session
         if: always()
@@ -276,7 +260,7 @@ jobs:
           retention-days: 90
 
       # ------------------------------------------------------------
-      # 6. Cleanup
+      # 7. Cleanup
       # ------------------------------------------------------------
       - name: Cleanup
         if: always()

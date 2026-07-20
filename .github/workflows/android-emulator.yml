@@ -132,18 +132,34 @@ jobs:
 
           # --------------------------------------------
           # Download and install ScreenStream APK
-          # Source: APKMirror (reliable, works in CI)
+          # Source: APKPure (allows automated downloads)
           # --------------------------------------------
-          echo "📥 Downloading ScreenStream APK from APKMirror..."
-          wget -O screenstream.apk "https://www.apkmirror.com/wp-content/themes/APKMirror/download.php?id=3238822"
+          echo "📥 Downloading ScreenStream APK from APKPure..."
+          wget -O screenstream.apk \
+            "https://apkpure.com/screenstream/info.dvkr.screenstream/download/4.4.2?fcid=7f9a3b5c-4e2d-4f1a-8b3c-9d4e5f6a7b8c"
 
-          # Fallback: if the above fails, try a different mirror
+          # Fallback: APKCombo if APKPure fails
           if [ ! -f screenstream.apk ] || [ $(stat -c%s screenstream.apk) -lt 1000000 ]; then
-            echo "⚠️ First download failed, trying alternative..."
-            wget -O screenstream.apk "https://apkpure.com/screenstream/info.dvkr.screenstream/download/4.4.2"
+            echo "⚠️ APKPure failed, trying APKCombo..."
+            wget -O screenstream.apk \
+              "https://apkcombo.com/screenstream/info.dvkr.screenstream/download/apk"
           fi
 
-          # Install the APK
+          # Fallback: direct APKMirror with proper User-Agent
+          if [ ! -f screenstream.apk ] || [ $(stat -c%s screenstream.apk) -lt 1000000 ]; then
+            echo "⚠️ APKCombo failed, trying APKMirror with browser User-Agent..."
+            wget -O screenstream.apk \
+              --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "https://www.apkmirror.com/wp-content/themes/APKMirror/download.php?id=3238822"
+          fi
+
+          # Final check
+          if [ ! -f screenstream.apk ] || [ $(stat -c%s screenstream.apk) -lt 1000000 ]; then
+            echo "❌ All download methods failed. Exiting."
+            exit 1
+          fi
+
+          echo "✅ APK downloaded successfully ($(stat -c%s screenstream.apk) bytes)"
           adb -s localhost:5555 install screenstream.apk
 
           # --------------------------------------------

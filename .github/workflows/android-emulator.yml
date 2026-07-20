@@ -33,20 +33,28 @@ jobs:
       - uses: actions/checkout@v4
 
       # ================================================================
-      # 1. System dependencies (ADB, kernel modules)
+      # 1. Install system dependencies
       # ================================================================
       - name: Install ADB and kernel modules
         run: |
           sudo apt-get update
           sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r)
 
-      - name: Load kernel modules for Redroid
+      - name: Load kernel modules
         run: |
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
           sudo modprobe ashmem_linux || true
 
       # ================================================================
-      # 2. Session persistence (restore encrypted artifact)
+      # 2. Prepare data directory with correct permissions
+      # ================================================================
+      - name: Create data directory
+        run: |
+          mkdir -p ./android-data
+          chmod 777 ./android-data
+
+      # ================================================================
+      # 3. Session restoration
       # ================================================================
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -76,7 +84,7 @@ jobs:
           fi
 
       # ================================================================
-      # 3. Setup script (Redroid + ScreenStream WebRTC)
+      # 4. Setup script (Redroid + ScreenStream WebRTC)
       # ================================================================
       - name: Create setup script
         run: |
@@ -107,12 +115,15 @@ jobs:
           # ------------------------------------------------------------------
           # Wait for Redroid to boot
           # ------------------------------------------------------------------
-          echo "⏳ Waiting for Redroid to boot..."
+          echo "⏳ Waiting for Redroid to boot (up to 120 seconds)..."
           sleep 30
 
+          # Reset ADB and connect
           adb kill-server
           adb start-server
 
+          # Connect and wait for device to appear
+          echo "⏳ Connecting ADB..."
           for i in {1..30}; do
             if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
               echo "✅ ADB connected"
@@ -121,37 +132,64 @@ jobs:
             sleep 5
           done
 
+          # Wait for device to become online (not offline)
+          echo "⏳ Waiting for device to become online..."
           for i in {1..30}; do
-            if adb -s localhost:5555 shell "echo ready" 2>/dev/null | grep -q "ready"; then
-              echo "✅ Device fully ready"
+            STATE=$(adb devices | grep -E "localhost:5555\s+(\w+)" | awk '{print $2}')
+            if [ "$STATE" = "device" ]; then
+              echo "✅ Device is online"
+              break
+            else
+              echo "⏳ Device state: $STATE (attempt $i/30)"
+              # Try to reconnect if still offline
+              if [ "$STATE" = "offline" ]; then
+                adb reconnect
+                sleep 3
+              fi
+              sleep 5
+            fi
+          done
+
+          # Wait for boot completion (sys.boot_completed = 1)
+          echo "⏳ Waiting for boot completion..."
+          for i in {1..60}; do
+            if adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | grep -q "1"; then
+              echo "✅ Boot completed"
               break
             fi
             sleep 5
           done
 
+          # Verify device is responsive
+          if ! adb -s localhost:5555 shell "echo ready" 2>/dev/null | grep -q "ready"; then
+            echo "❌ Device still not responsive. Dumping logs..."
+            docker logs redroid
+            exit 1
+          fi
+
           adb devices
 
           # ------------------------------------------------------------------
-          # Enable ARM translation (optional)
+          # Enable ARM translation (for app compatibility)
           # ------------------------------------------------------------------
           echo "🔧 Enabling ARM translation..."
           adb -s localhost:5555 shell setprop persist.sys.nativebridge 1
           adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
 
           # ------------------------------------------------------------------
-          # Download and install ScreenStream APK (Google Play version)
+          # Download and install ScreenStream APK
           # ------------------------------------------------------------------
-          echo "📱 Downloading ScreenStream APK from APKMirror..."
+          echo "📱 Downloading ScreenStream APK..."
           curl -L -o screenstream.apk \
-            "https://www.apkmirror.com/wp-content/themes/APKMirror/download.php?id=3446516" || \
+            "https://github.com/dkrivoruchko/ScreenStream/releases/download/v0.15.3/ScreenStream_v0.15.3.apk" || \
             curl -L -o screenstream.apk \
-            "https://github.com/dkrivoruchko/ScreenStream/releases/download/v0.15.3/ScreenStream_v0.15.3.apk"
+            "https://www.apkmirror.com/wp-content/themes/APKMirror/download.php?id=3446516"
 
           echo "📱 Installing ScreenStream..."
-          adb -s localhost:5555 install -r screenstream.apk
+          adb -s localhost:5555 install -r screenstream.apk || echo "⚠️ Installation failed, continuing..."
 
           # ------------------------------------------------------------------
-          # Launch ScreenStream and start Global (WebRTC) mode
+          # Launch ScreenStream in Global (WebRTC) mode
           # ------------------------------------------------------------------
           echo "📱 Launching ScreenStream in Global (WebRTC) mode..."
 
@@ -159,12 +197,12 @@ jobs:
           STREAM_NAME="cloud-phone-$(date +%s)"
           STREAM_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
 
-          # Start the app (deep link method)
+          # Try deep link method
           adb -s localhost:5555 shell am start \
             -a android.intent.action.VIEW \
-            -d "screenstream://start?mode=webrtc&name=$STREAM_NAME&password=$STREAM_PASS"
+            -d "screenstream://start?mode=webrtc&name=$STREAM_NAME&password=$STREAM_PASS" || true
 
-          # If deep link fails, fallback to UI automation (tap sequence)
+          # If deep link fails, use UI automation
           if [ $? -ne 0 ]; then
             echo "⚠️ Deep link failed, using UI automation..."
             adb -s localhost:5555 shell am start -n info.dvkr.screenstream/.MainActivity
@@ -184,7 +222,7 @@ jobs:
           echo "🔑 Stream Password: $STREAM_PASS"
 
           # ------------------------------------------------------------------
-          # Start NPort tunnel for ADB fallback (optional)
+          # Start NPort tunnel for ADB fallback
           # ------------------------------------------------------------------
           echo "🔗 Starting NPort tunnel for ADB fallback..."
           AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
@@ -232,28 +270,34 @@ jobs:
           chmod +x setup.sh
 
       # ================================================================
-      # 4. Execute the setup script
+      # 5. Execute the setup script
       # ================================================================
       - name: Run setup
         run: bash setup.sh
 
       # ================================================================
-      # 5. Save session (encrypt and upload artifact)
+      # 6. Save session (encrypt and upload artifact)
       # ================================================================
       - name: Save session
         if: always()
         run: |
-          if [ -d ./android-data ] && [ "$(ls -A ./android-data)" ]; then
+          # Fix permissions on the data directory before tar
+          if [ -d ./android-data ] && [ "$(ls -A ./android-data 2>/dev/null)" ]; then
             echo "📦 Creating backup..."
-            tar -czf data.tar.gz -C ./android-data .
-            if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ]; then
+            # Use sudo to read the directory if needed
+            sudo tar -czf data.tar.gz -C ./android-data . || true
+            # Change ownership to runner for artifact upload
+            sudo chown -R $(whoami) ./android-data
+            if [ "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' }}" == "true" ] && [ -f data.tar.gz ]; then
               gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -c data.tar.gz
               mv data.tar.gz.gpg ./android-data/
               rm -f data.tar.gz
               echo "✅ Backup encrypted"
-            else
+            elif [ -f data.tar.gz ]; then
               mv data.tar.gz ./android-data/
               echo "✅ Backup created"
+            else
+              echo "⚠️ Backup failed"
             fi
           else
             echo "⚠️ No data to save"
@@ -268,7 +312,7 @@ jobs:
           retention-days: 90
 
       # ================================================================
-      # 6. Cleanup
+      # 7. Cleanup
       # ================================================================
       - name: Cleanup
         if: always()

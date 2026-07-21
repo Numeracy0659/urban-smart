@@ -1,4 +1,4 @@
-name: Cloud Android Phone (ws-scrcpy-web)
+name: Cloud Android Phone (scrcpy-web - High Res)
 on:
   push:
     branches: [ main ]
@@ -75,7 +75,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 3. Create the setup script (using shmayro/scrcpy-web)
+      # 3. Create the setup script (with higher resolution)
       # ------------------------------------------------------------
       - name: Create setup script
         run: |
@@ -84,11 +84,12 @@ jobs:
           set -e
 
           echo "================================================"
-          echo "📱 STARTING REDROID WITH SCRCPY-WEB"
+          echo "📱 STARTING REDROID WITH SCRCPY-WEB (HIGH RES)"
           echo "================================================"
 
           # --------------------------------------------
-          # Start Redroid
+          # Start Redroid with higher resolution (1440x3200, 560 DPI)
+          # This makes the display larger and sharper.
           # --------------------------------------------
           docker run -d --name redroid \
             --privileged \
@@ -96,9 +97,9 @@ jobs:
             -p 5555:5555 \
             redroid/redroid:14.0.0_64only-latest \
             androidboot.redroid_gpu_mode=guest \
-            androidboot.redroid_width=1080 \
-            androidboot.redroid_height=2400 \
-            androidboot.redroid_dpi=420 \
+            androidboot.redroid_width=1440 \
+            androidboot.redroid_height=3200 \
+            androidboot.redroid_dpi=560 \
             androidboot.redroid_fps=60 \
             androidboot.use_memfd=true
 
@@ -132,7 +133,6 @@ jobs:
 
           # --------------------------------------------
           # Start scrcpy-web container (official image)
-          # This uses WebSocket + WebCodecs – no APK required
           # --------------------------------------------
           echo "📱 Starting scrcpy-web on port 8000..."
           docker run -d --name scrcpy-web \
@@ -186,6 +186,7 @@ jobs:
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
           echo "📱 Android 14 (64-bit) with scrcpy-web"
+          echo "📱 Resolution: 1440x3200 @ 560 DPI"
           echo "📱 Web Interface: $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
           echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
@@ -193,7 +194,8 @@ jobs:
           echo "To control the phone:"
           echo "  Open $TUNNEL_URL in your browser"
           echo "  Log in with admin:$AUTH_PASS"
-          echo "  You will see the Android screen."
+          echo "  Use Alt+F for fullscreen in scrcpy-web"
+          echo "  Use F11 for browser fullscreen"
           echo ""
           echo "To use ADB locally:"
           echo "  adb connect $TUNNEL_URL:5555"

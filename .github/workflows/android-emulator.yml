@@ -125,15 +125,15 @@ jobs:
           done
 
           # --------------------------------------------
-          # Enable ARM translation
+          # Enable ARM translation (for app compatibility)
           # --------------------------------------------
           adb -s localhost:5555 shell setprop persist.sys.nativebridge 1
           adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
 
           # --------------------------------------------
-          # Download and install ScreenStream (Google Play version)
-          # Source: https://github.com/dkrivoruchko/ScreenStream/releases/tag/4.4.2
-          # This is the Play Store version which supports WebRTC (Global mode)
+          # Download and install ScreenStream 4.4.2 (PlayStore)
+          # APK: ScreenStream-PlayStore-44002.apk
+          # WebRTC (Global mode) is supported in this version
           # --------------------------------------------
           echo "📥 Downloading ScreenStream 4.4.2 (PlayStore) from GitHub..."
           wget -O screenstream.apk \
@@ -142,37 +142,28 @@ jobs:
           adb -s localhost:5555 install screenstream.apk
 
           # --------------------------------------------
-          # Launch ScreenStream
+          # Launch ScreenStream and start WebRTC streaming
           # --------------------------------------------
           echo "📱 Launching ScreenStream..."
           adb -s localhost:5555 shell monkey -p info.dvkr.screenstream 1
 
-          echo ""
-          echo "================================================"
-          echo "📱 ACTION REQUIRED: START THE STREAM"
-          echo "================================================"
-          echo ""
-          echo "ScreenStream is now installed and launched."
-          echo ""
-          echo "To start the WebRTC stream:"
-          echo "  1. On the phone screen, you should see the ScreenStream app."
-          echo "  2. Tap the 'Start' button (or the 'Global' option)."
-          echo "  3. Grant any permissions requested (screen recording, etc.)."
-          echo "  4. The app will display a Stream URL."
-          echo ""
-          echo "Once the stream is started, the URL will be displayed in the app."
-          echo ""
-          echo "📝 The stream URL will look like:"
-          echo "   https://screenstream.io/stream/XXXXX"
-          echo ""
-          echo "🔗 You can also access the phone via ADB:"
-          echo "   adb connect localhost:5555"
-          echo "   scrcpy -s localhost:5555"
-          echo ""
-          echo "================================================"
-          echo ""
-          echo "⏳ Press Enter once you have started the stream..."
-          read -p "Press Enter to continue..."
+          # Wait for the app to open
+          sleep 5
+
+          # Grant overlay permission (required for screen capture)
+          adb -s localhost:5555 shell appops set info.dvkr.screenstream PROJECT_MEDIA allow
+
+          # Tap the "Start" button (coordinates for 1080x2400 screen)
+          adb -s localhost:5555 shell input tap 540 1200
+
+          # Wait for the system permission dialog
+          sleep 3
+
+          # Tap "Allow" on the screen recording permission dialog
+          adb -s localhost:5555 shell input tap 540 1500
+
+          # Wait for the stream to start
+          sleep 10
 
           # --------------------------------------------
           # Get the stream URL from logcat
@@ -209,14 +200,15 @@ jobs:
           TUNNEL_URL="https://cloud-phone-adb.nport.link"
 
           # --------------------------------------------
-          # Display info
+          # Display final connection info
           # --------------------------------------------
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY (WebRTC)"
           echo "================================================"
           echo "📱 Android 14 (64-bit) with WebRTC streaming"
-          echo "📱 WebRTC Stream: $STREAM_URL"
+          echo "📱 WebRTC Stream URL: $STREAM_URL"
           echo "   (Open in any WebRTC-enabled browser)"
+          echo "   The stream may require a password"
           echo ""
           echo "🔌 ADB Fallback (via NPort): $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
@@ -229,7 +221,7 @@ jobs:
           echo "================================================"
 
           # --------------------------------------------
-          # Keep alive
+          # Keep alive for the job duration
           # --------------------------------------------
           echo "⏳ Keeping phone alive for 340 minutes..."
           sleep 340m
@@ -244,7 +236,7 @@ jobs:
         run: bash setup.sh
 
       # ------------------------------------------------------------
-      # 5. Save session (fix permission issue)
+      # 5. Save session (fix permissions)
       # ------------------------------------------------------------
       - name: Save session
         if: always()

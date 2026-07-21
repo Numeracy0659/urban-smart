@@ -133,7 +133,7 @@ jobs:
           # --------------------------------------------
           # Download and install ScreenStream (Google Play version)
           # Source: https://github.com/dkrivoruchko/ScreenStream/releases/tag/4.4.2
-          # The APK is ScreenStream-PlayStore-44002.apk (WebRTC enabled)
+          # This is the Play Store version which supports WebRTC (Global mode)
           # --------------------------------------------
           echo "📥 Downloading ScreenStream 4.4.2 (PlayStore) from GitHub..."
           wget -O screenstream.apk \
@@ -142,27 +142,49 @@ jobs:
           adb -s localhost:5555 install screenstream.apk
 
           # --------------------------------------------
-          # Launch ScreenStream and start WebRTC streaming
+          # Launch ScreenStream
           # --------------------------------------------
           echo "📱 Launching ScreenStream..."
-          adb -s localhost:5555 shell am start -n info.dvkr.screenstream/.MainActivity
+          adb -s localhost:5555 shell monkey -p info.dvkr.screenstream 1
 
-          # Grant permissions
-          adb -s localhost:5555 shell pm grant info.dvkr.screenstream android.permission.ACCESS_FINE_LOCATION
-          adb -s localhost:5555 shell pm grant info.dvkr.screenstream android.permission.RECORD_AUDIO
+          echo ""
+          echo "================================================"
+          echo "📱 ACTION REQUIRED: START THE STREAM"
+          echo "================================================"
+          echo ""
+          echo "ScreenStream is now installed and launched."
+          echo ""
+          echo "To start the WebRTC stream:"
+          echo "  1. On the phone screen, you should see the ScreenStream app."
+          echo "  2. Tap the 'Start' button (or the 'Global' option)."
+          echo "  3. Grant any permissions requested (screen recording, etc.)."
+          echo "  4. The app will display a Stream URL."
+          echo ""
+          echo "Once the stream is started, the URL will be displayed in the app."
+          echo ""
+          echo "📝 The stream URL will look like:"
+          echo "   https://screenstream.io/stream/XXXXX"
+          echo ""
+          echo "🔗 You can also access the phone via ADB:"
+          echo "   adb connect localhost:5555"
+          echo "   scrcpy -s localhost:5555"
+          echo ""
+          echo "================================================"
+          echo ""
+          echo "⏳ Press Enter once you have started the stream..."
+          read -p "Press Enter to continue..."
 
-          # Start WebRTC mode (Global)
-          adb -s localhost:5555 shell am start -n info.dvkr.screenstream/.MainActivity --es mode webrtc
-
-          echo "⏳ Waiting for ScreenStream to start..."
-          sleep 15
-
+          # --------------------------------------------
           # Get the stream URL from logcat
+          # --------------------------------------------
           STREAM_URL=$(adb -s localhost:5555 logcat -d | grep -o 'https://screenstream.io/stream/[^ ]*' | head -1)
 
           if [ -z "$STREAM_URL" ]; then
-            echo "⚠️ Could not auto-detect stream URL. Please check the app manually."
-            STREAM_URL="https://screenstream.io/"
+            echo "⚠️ Could not auto-detect stream URL."
+            echo "📱 Please manually copy the URL from the app screen."
+            echo ""
+            echo "📝 Enter the Stream URL (e.g., https://screenstream.io/stream/XXXXX):"
+            read -p "Stream URL: " STREAM_URL
           else
             echo "✅ WebRTC Stream URL detected: $STREAM_URL"
           fi
@@ -195,7 +217,6 @@ jobs:
           echo "📱 Android 14 (64-bit) with WebRTC streaming"
           echo "📱 WebRTC Stream: $STREAM_URL"
           echo "   (Open in any WebRTC-enabled browser)"
-          echo "   The stream may require a password"
           echo ""
           echo "🔌 ADB Fallback (via NPort): $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
@@ -228,7 +249,6 @@ jobs:
       - name: Save session
         if: always()
         run: |
-          # Fix permissions: the container writes as root, so fix ownership
           if [ -d ./android-data ]; then
             sudo chown -R $(id -u):$(id -g) ./android-data 2>/dev/null || true
             sudo chmod -R 755 ./android-data 2>/dev/null || true

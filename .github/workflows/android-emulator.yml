@@ -33,13 +33,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # ------------------------------------------------------------
-      # 1. Install dependencies
+      # 1. Install dependencies & kernel modules
       # ------------------------------------------------------------
-      - name: Install ADB, kernel modules, and gdown
+      - name: Install ADB and kernel modules
         run: |
           sudo apt-get update
-          sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r) python3-pip
-          pip3 install gdown
+          sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r)
 
       - name: Load kernel modules
         run: |
@@ -76,17 +75,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 3. Download ScreenStream APK from Google Drive
-      # ------------------------------------------------------------
-      - name: Download ScreenStream APK from Google Drive
-        run: |
-          echo "📥 Downloading ScreenStream APK from Google Drive..."
-          FILE_ID="1wRaNK0we7BMAXX2LcHdwCN5a0_gK-79o"
-          gdown "https://drive.google.com/uc?id=${FILE_ID}" -O screenstream.apk
-          ls -lh screenstream.apk
-
-      # ------------------------------------------------------------
-      # 4. Create the setup script
+      # 3. Create the setup script
       # ------------------------------------------------------------
       - name: Create setup script
         run: |
@@ -142,9 +131,14 @@ jobs:
           adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
 
           # --------------------------------------------
-          # Install ScreenStream APK (downloaded from Google Drive)
+          # Download and install ScreenStream (Google Play version)
+          # Source: https://github.com/dkrivoruchko/ScreenStream/releases/tag/4.4.2
+          # The APK is ScreenStream-PlayStore-44002.apk (WebRTC enabled)
           # --------------------------------------------
-          echo "📥 Installing ScreenStream APK..."
+          echo "📥 Downloading ScreenStream 4.4.2 (PlayStore) from GitHub..."
+          wget -O screenstream.apk \
+            "https://github.com/dkrivoruchko/ScreenStream/releases/download/4.4.2/ScreenStream-PlayStore-44002.apk"
+
           adb -s localhost:5555 install screenstream.apk
 
           # --------------------------------------------
@@ -157,7 +151,7 @@ jobs:
           adb -s localhost:5555 shell pm grant info.dvkr.screenstream android.permission.ACCESS_FINE_LOCATION
           adb -s localhost:5555 shell pm grant info.dvkr.screenstream android.permission.RECORD_AUDIO
 
-          # Start WebRTC mode
+          # Start WebRTC mode (Global)
           adb -s localhost:5555 shell am start -n info.dvkr.screenstream/.MainActivity --es mode webrtc
 
           echo "⏳ Waiting for ScreenStream to start..."
@@ -170,7 +164,7 @@ jobs:
             echo "⚠️ Could not auto-detect stream URL. Please check the app manually."
             STREAM_URL="https://screenstream.io/"
           else
-            echo "✅ WebRTC Stream URL: $STREAM_URL"
+            echo "✅ WebRTC Stream URL detected: $STREAM_URL"
           fi
 
           # --------------------------------------------
@@ -201,6 +195,7 @@ jobs:
           echo "📱 Android 14 (64-bit) with WebRTC streaming"
           echo "📱 WebRTC Stream: $STREAM_URL"
           echo "   (Open in any WebRTC-enabled browser)"
+          echo "   The stream may require a password"
           echo ""
           echo "🔌 ADB Fallback (via NPort): $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
@@ -222,17 +217,18 @@ jobs:
           chmod +x setup.sh
 
       # ------------------------------------------------------------
-      # 5. Run the setup
+      # 4. Run the setup
       # ------------------------------------------------------------
       - name: Run Redroid setup
         run: bash setup.sh
 
       # ------------------------------------------------------------
-      # 6. Save session
+      # 5. Save session (fix permission issue)
       # ------------------------------------------------------------
       - name: Save session
         if: always()
         run: |
+          # Fix permissions: the container writes as root, so fix ownership
           if [ -d ./android-data ]; then
             sudo chown -R $(id -u):$(id -g) ./android-data 2>/dev/null || true
             sudo chmod -R 755 ./android-data 2>/dev/null || true
@@ -260,7 +256,7 @@ jobs:
           retention-days: 90
 
       # ------------------------------------------------------------
-      # 7. Cleanup
+      # 6. Cleanup
       # ------------------------------------------------------------
       - name: Cleanup
         if: always()

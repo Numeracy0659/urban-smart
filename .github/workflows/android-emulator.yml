@@ -1,4 +1,4 @@
-name: Cloud Android Phone (WebRTC - ScreenStream)
+name: Cloud Android Phone (ws-scrcpy-web)
 on:
   push:
     branches: [ main ]
@@ -75,7 +75,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 3. Create the setup script
+      # 3. Create the setup script (using shmayro/scrcpy-web)
       # ------------------------------------------------------------
       - name: Create setup script
         run: |
@@ -84,7 +84,7 @@ jobs:
           set -e
 
           echo "================================================"
-          echo "📱 STARTING REDROID WITH SCREENSTREAM (WebRTC)"
+          echo "📱 STARTING REDROID WITH SCRCPY-WEB"
           echo "================================================"
 
           # --------------------------------------------
@@ -125,103 +125,83 @@ jobs:
           done
 
           # --------------------------------------------
-          # Enable ARM translation (for app compatibility)
+          # Enable ARM translation (optional)
           # --------------------------------------------
           adb -s localhost:5555 shell setprop persist.sys.nativebridge 1
           adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
 
           # --------------------------------------------
-          # Download and install ScreenStream 4.4.2 (PlayStore)
-          # APK: ScreenStream-PlayStore-44002.apk
-          # WebRTC (Global mode) is supported in this version
+          # Start scrcpy-web container (official image)
+          # This uses WebSocket + WebCodecs – no APK required
           # --------------------------------------------
-          echo "📥 Downloading ScreenStream 4.4.2 (PlayStore) from GitHub..."
-          wget -O screenstream.apk \
-            "https://github.com/dkrivoruchko/ScreenStream/releases/download/4.4.2/ScreenStream-PlayStore-44002.apk"
+          echo "📱 Starting scrcpy-web on port 8000..."
+          docker run -d --name scrcpy-web \
+            --network host \
+            --privileged \
+            shmayro/scrcpy-web:latest \
+            sh -c "
+              for i in {1..30}; do
+                if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
+                  break
+                fi
+                sleep 2
+              done
+              npm start
+            "
 
-          adb -s localhost:5555 install screenstream.apk
+          echo "⏳ Waiting for web server on port 8000..."
+          for i in {1..40}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
+              echo "✅ Web server ready"
+              break
+            fi
+            sleep 3
+          done
 
-          # --------------------------------------------
-          # Launch ScreenStream and start WebRTC streaming
-          # --------------------------------------------
-          echo "📱 Launching ScreenStream..."
-          adb -s localhost:5555 shell monkey -p info.dvkr.screenstream 1
-
-          # Wait for the app to open
-          sleep 5
-
-          # Grant overlay permission (required for screen capture)
-          adb -s localhost:5555 shell appops set info.dvkr.screenstream PROJECT_MEDIA allow
-
-          # Tap the "Start" button (coordinates for 1080x2400 screen)
-          adb -s localhost:5555 shell input tap 540 1200
-
-          # Wait for the system permission dialog
-          sleep 3
-
-          # Tap "Allow" on the screen recording permission dialog
-          adb -s localhost:5555 shell input tap 540 1500
-
-          # Wait for the stream to start
-          sleep 10
+          docker logs scrcpy-web --tail 20
 
           # --------------------------------------------
-          # Get the stream URL from logcat
+          # NPort tunnel with authentication
           # --------------------------------------------
-          STREAM_URL=$(adb -s localhost:5555 logcat -d | grep -o 'https://screenstream.io/stream/[^ ]*' | head -1)
-
-          if [ -z "$STREAM_URL" ]; then
-            echo "⚠️ Could not auto-detect stream URL."
-            echo "📱 Please manually copy the URL from the app screen."
-            echo ""
-            echo "📝 Enter the Stream URL (e.g., https://screenstream.io/stream/XXXXX):"
-            read -p "Stream URL: " STREAM_URL
-          else
-            echo "✅ WebRTC Stream URL detected: $STREAM_URL"
-          fi
-
-          # --------------------------------------------
-          # NPort tunnel for ADB fallback
-          # --------------------------------------------
-          echo "🔗 Starting NPort tunnel for ADB fallback..."
+          echo "🔗 Starting NPort tunnel for web UI..."
           AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
-          npx nport 5555 -s cloud-phone-adb --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
+          npx nport 8000 -s cloud-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
           NPORT_PID=$!
           echo $NPORT_PID > nport.pid
 
           echo "⏳ Waiting for tunnel to be live..."
           for i in {1..60}; do
-            if curl -s -o /dev/null -w "%{http_code}" https://cloud-phone-adb.nport.link | grep -q "200\|401\|403"; then
+            if curl -s -o /dev/null -w "%{http_code}" https://cloud-phone.nport.link | grep -q "200\|401\|403"; then
               echo "✅ Tunnel live"
               break
             fi
             sleep 5
           done
-          TUNNEL_URL="https://cloud-phone-adb.nport.link"
+          TUNNEL_URL="https://cloud-phone.nport.link"
 
           # --------------------------------------------
-          # Display final connection info
+          # Display info
           # --------------------------------------------
           echo "================================================"
-          echo "🌐 ANDROID PHONE IS READY (WebRTC)"
+          echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
-          echo "📱 Android 14 (64-bit) with WebRTC streaming"
-          echo "📱 WebRTC Stream URL: $STREAM_URL"
-          echo "   (Open in any WebRTC-enabled browser)"
-          echo "   The stream may require a password"
-          echo ""
-          echo "🔌 ADB Fallback (via NPort): $TUNNEL_URL"
+          echo "📱 Android 14 (64-bit) with scrcpy-web"
+          echo "📱 Web Interface: $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
+          echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
           echo "================================================"
+          echo "To control the phone:"
+          echo "  Open $TUNNEL_URL in your browser"
+          echo "  Log in with admin:$AUTH_PASS"
+          echo "  You will see the Android screen."
           echo ""
           echo "To use ADB locally:"
           echo "  adb connect $TUNNEL_URL:5555"
           echo "  scrcpy -s $TUNNEL_URL:5555"
-          echo ""
           echo "================================================"
 
           # --------------------------------------------
-          # Keep alive for the job duration
+          # Keep alive
           # --------------------------------------------
           echo "⏳ Keeping phone alive for 340 minutes..."
           sleep 340m
@@ -274,6 +254,6 @@ jobs:
         if: always()
         run: |
           kill $(cat nport.pid) 2>/dev/null || true
-          docker stop redroid 2>/dev/null || true
-          docker rm redroid 2>/dev/null || true
+          docker stop redroid scrcpy-web 2>/dev/null || true
+          docker rm redroid scrcpy-web 2>/dev/null || true
           sudo rm -rf ./android-data 2>/dev/null || true

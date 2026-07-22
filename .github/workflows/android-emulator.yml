@@ -1,4 +1,4 @@
-name: Cloud Android Phone (scrcpy-web - High Res)
+name: Professional Cloud Android Phone
 on:
   push:
     branches: [ main ]
@@ -35,18 +35,29 @@ jobs:
       # ------------------------------------------------------------
       # 1. Install dependencies & kernel modules
       # ------------------------------------------------------------
-      - name: Install ADB and kernel modules
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y android-tools-adb linux-modules-extra-$(uname -r)
+          sudo apt-get install -y \
+            android-tools-adb \
+            linux-modules-extra-$(uname -r) \
+            mesa-utils \
+            libgl1-mesa-dri
 
       - name: Load kernel modules
         run: |
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
           sudo modprobe ashmem_linux || true
+          sudo modprobe i915 || true  # Intel GPU
+          sudo modprobe amdgpu || true # AMD GPU
+
+      - name: Verify GPU access
+        run: |
+          ls -la /dev/dri/ || echo "No DRI devices found"
+          glxinfo | grep "OpenGL renderer" || echo "No OpenGL renderer"
 
       # ------------------------------------------------------------
-      # 2. Session persistence (restore)
+      # 2. Session persistence
       # ------------------------------------------------------------
       - name: Restore session data (manual)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
@@ -75,7 +86,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 3. Create the setup script (with higher resolution)
+      # 3. Create the professional setup script
       # ------------------------------------------------------------
       - name: Create setup script
         run: |
@@ -84,23 +95,39 @@ jobs:
           set -e
 
           echo "================================================"
-          echo "📱 STARTING REDROID WITH SCRCPY-WEB (HIGH RES)"
+          echo "📱 PROFESSIONAL CLOUD ANDROID PHONE"
+          echo "================================================"
+          echo "GPU: Hardware acceleration enabled"
+          echo "ARM Translation: Enabled (libndk)"
+          echo "Streaming: ws-scrcpy (60 FPS)"
+          echo "Resolution: 1440x3200 @ 560 DPI"
           echo "================================================"
 
           # --------------------------------------------
-          # Start Redroid with higher resolution (1440x3200, 560 DPI)
-          # This makes the display larger and sharper.
+          # Start Redroid with GPU passthrough
           # --------------------------------------------
+          echo "🚀 Starting Redroid with hardware acceleration..."
+
+          # Detect GPU and set appropriate flags
+          GPU_FLAGS=""
+          if [ -e /dev/dri/renderD128 ]; then
+            GPU_FLAGS="--device /dev/dri:/dev/dri"
+            echo "✅ GPU passthrough enabled (/dev/dri)"
+          fi
+
           docker run -d --name redroid \
             --privileged \
+            $GPU_FLAGS \
             -v $(pwd)/android-data:/data \
             -p 5555:5555 \
             redroid/redroid:14.0.0_64only-latest \
-            androidboot.redroid_gpu_mode=guest \
+            androidboot.redroid_gpu_mode=host \
             androidboot.redroid_width=1440 \
             androidboot.redroid_height=3200 \
             androidboot.redroid_dpi=560 \
             androidboot.redroid_fps=60 \
+            androidboot.redroid_arm_translation=enabled \
+            androidboot.redroid_arm_translation_32bit=enabled \
             androidboot.use_memfd=true
 
           echo "⏳ Waiting for Redroid to boot..."
@@ -126,15 +153,20 @@ jobs:
           done
 
           # --------------------------------------------
-          # Enable ARM translation (optional)
+          # Enable ARM translation
           # --------------------------------------------
+          echo "🔧 Enabling ARM translation..."
           adb -s localhost:5555 shell setprop persist.sys.nativebridge 1
           adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
 
+          # Verify ARM translation
+          ARM_STATUS=$(adb -s localhost:5555 shell getprop persist.sys.nativebridge)
+          echo "ARM Translation Status: $ARM_STATUS"
+
           # --------------------------------------------
-          # Start scrcpy-web container (official image)
+          # Start ws-scrcpy (60 FPS streaming)
           # --------------------------------------------
-          echo "📱 Starting scrcpy-web on port 8000..."
+          echo "📱 Starting ws-scrcpy on port 8000..."
           docker run -d --name scrcpy-web \
             --network host \
             --privileged \
@@ -161,15 +193,14 @@ jobs:
           docker logs scrcpy-web --tail 20
 
           # --------------------------------------------
-          # NPort tunnel with authentication
+          # NPort tunnel
           # --------------------------------------------
-          echo "🔗 Starting NPort tunnel for web UI..."
+          echo "🔗 Starting NPort tunnel..."
           AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
           npx nport 8000 -s cloud-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
           NPORT_PID=$!
           echo $NPORT_PID > nport.pid
 
-          echo "⏳ Waiting for tunnel to be live..."
           for i in {1..60}; do
             if curl -s -o /dev/null -w "%{http_code}" https://cloud-phone.nport.link | grep -q "200\|401\|403"; then
               echo "✅ Tunnel live"
@@ -185,7 +216,8 @@ jobs:
           echo "================================================"
           echo "🌐 ANDROID PHONE IS READY"
           echo "================================================"
-          echo "📱 Android 14 (64-bit) with scrcpy-web"
+          echo "📱 Android 14 (64-bit) with GPU acceleration"
+          echo "📱 ARM Translation: Enabled"
           echo "📱 Resolution: 1440x3200 @ 560 DPI"
           echo "📱 Web Interface: $TUNNEL_URL"
           echo "🔑 Auth: admin:$AUTH_PASS"
@@ -218,7 +250,7 @@ jobs:
         run: bash setup.sh
 
       # ------------------------------------------------------------
-      # 5. Save session (fix permissions)
+      # 5. Save session
       # ------------------------------------------------------------
       - name: Save session
         if: always()

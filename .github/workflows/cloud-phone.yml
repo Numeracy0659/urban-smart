@@ -50,23 +50,37 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Enable KVM
+      - name: Enable KVM Hardware Acceleration
         run: |
+          echo "Enabling KVM for hardware-accelerated Android emulation..."
           sudo chmod 666 /dev/kvm
-          echo "KVM enabled"
+          echo "KVM permissions set"
           ls -la /dev/kvm
 
       - name: Pull Docker Images
         run: |
+          echo "Pulling Android emulator image..."
           docker pull shmayro/dockerify-android:latest
+          echo ""
+          echo "Pulling scrcpy-web streaming image..."
           docker pull shmayro/scrcpy-web:latest
-          echo "Docker images ready"
+          echo ""
+          echo "All Docker images ready."
+          docker images | grep -E "dockerify|scrcpy"
 
-      - name: Start Android Emulator
+      - name: Start Android Emulator Container
         run: |
+          echo "Starting Android 14 (API 34) emulator with KVM acceleration..."
+          echo "  Resolution: ${{ github.event.inputs.resolution }}"
+          echo "  RAM: ${{ github.event.inputs.ram_mb }}MB"
+          echo "  Root: ${{ github.event.inputs.enable_root }}"
+          echo "  GAPPS: ${{ github.event.inputs.enable_gapps }}"
+          echo "  ARM Translation: ${{ github.event.inputs.enable_arm }}"
+          echo ""
+
           docker run -d \
             --name dockerify-android \
             --privileged \
@@ -79,12 +93,15 @@ jobs:
             -e GAPPS_SETUP=$(echo "${{ github.event.inputs.enable_gapps }}" | tr '[:upper:]' '[:lower:]') \
             -e ARM_TRANSLATION=$(echo "${{ github.event.inputs.enable_arm }}" | tr '[:upper:]' '[:lower:]') \
             shmayro/dockerify-android:latest
-          echo "Android emulator starting..."
 
-      - name: Start scrcpy-web
+          echo "Android emulator container started. Waiting for initialization..."
+
+      - name: Start scrcpy-web Streaming Server
         run: |
-          echo "Waiting 30s for emulator to initialize..."
+          echo "Waiting 30s for emulator to initialize network..."
           sleep 30
+
+          echo "Starting scrcpy-web streaming server..."
           docker run -d \
             --name scrcpy-web \
             --privileged \
@@ -92,150 +109,242 @@ jobs:
             --link dockerify-android \
             shmayro/scrcpy-web:latest sh -c \
             "adb connect dockerify-android:5555 && npm start"
-          echo "scrcpy-web container started on port 8000"
 
-      - name: Wait for Android Boot
+          echo "scrcpy-web streaming server started on port 8000."
+
+      - name: Wait for Android Boot Completion
         run: |
-          echo "Waiting for Android to boot..."
+          echo "Waiting for Android to complete boot process..."
+          echo "Note: First boot with ROOT+GAPPS may take 10-15 minutes."
+          echo ""
+
           BOOT="0"
-          for i in $(seq 1 1200); do
+          MAX_WAIT=1200
+          for i in $(seq 1 ${MAX_WAIT}); do
             BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
-              echo "Android boot completed after ${i}s"
+              echo "✅ Android boot completed successfully after ${i} seconds."
               break
             fi
             if [ $((i % 60)) -eq 0 ]; then
-              echo "  ... booting (${i}s) — checking status..."
+              echo "  ⏳ Booting... (${i}s elapsed)"
               docker exec dockerify-android adb devices 2>/dev/null || true
-              docker logs --since 60s dockerify-android 2>&1 | grep -E "Broadcast completed|Success" || true
+              docker logs --since 60s dockerify-android 2>&1 | grep -iE "boot|broadcast|success" | tail -3 || true
             fi
             sleep 1
           done
 
           if [ "${BOOT}" != "1" ]; then
-            echo "::warning::Android boot didn't fully complete in 20 minutes."
-            docker logs --tail 50 dockerify-android
+            echo "::warning::Android boot did not complete within 20 minutes."
+            echo "Checking recent Docker logs..."
+            docker logs --tail 80 dockerify-android 2>&1 | grep -iE "boot|error|fail|broadcast" | tail -20
           else
-            echo "Boot fully successful!"
+            echo "✅ Boot verification passed!"
           fi
 
-      - name: Optimize Android
+      - name: Apply Performance Optimizations
         run: |
-          echo "Disabling animations for smoother experience..."
-          docker exec dockerify-android adb shell settings put global window_animation_scale 0 2>/dev/null || true
-          docker exec dockerify-android adb shell settings put global transition_animation_scale 0 2>/dev/null || true
-          docker exec dockerify-android adb shell settings put global animator_duration_scale 0 2>/dev/null || true
-          docker exec dockerify-android adb shell settings put system screen_off_timeout 2147483647 2>/dev/null || true
-          echo "Optimizations applied"
-
-      - name: Verify Root Access
-        run: |
-          echo "=== ROOT VERIFICATION ==="
+          echo "Applying Android performance optimizations..."
           echo ""
-          echo "--- Checking UID ---"
+
+          # Disable animations for smoother rendering
+          docker exec dockerify-android adb shell settings put global window_animation_scale 0 2>/dev/null && echo "  ✅ Window animations disabled" || true
+          docker exec dockerify-android adb shell settings put global transition_animation_scale 0 2>/dev/null && echo "  ✅ Transition animations disabled" || true
+          docker exec dockerify-android adb shell settings put global animator_duration_scale 0 2>/dev/null && echo "  ✅ Animator duration disabled" || true
+
+          # Prevent screen from turning off
+          docker exec dockerify-android adb shell settings put system screen_off_timeout 2147483647 2>/dev/null && echo "  ✅ Screen timeout disabled" || true
+
+          # Show IME with hardware keyboard
+          docker exec dockerify-android adb shell settings put secure show_ime_with_hard_keyboard 1 2>/dev/null && echo "  ✅ IME with hardware keyboard enabled" || true
+
+          # Set development settings
+          docker exec dockerify-android adb shell settings put global development_settings_enabled 1 2>/dev/null && echo "  ✅ Developer settings enabled" || true
+
+          echo ""
+          echo "All performance optimizations applied successfully."
+
+      - name: Verify Root Access and System Status
+        run: |
+          echo "============================================"
+          echo "  ROOT ACCESS VERIFICATION"
+          echo "============================================"
+          echo ""
+
+          echo "--- Process UID Check ---"
           docker exec dockerify-android adb shell "cat /proc/self/status | grep Uid"
           echo ""
-          echo "--- Checking /system/xbin/su ---"
-          docker exec dockerify-android adb shell "ls -la /system/xbin/su 2>/dev/null || ls -la /system/bin/su 2>/dev/null || echo 'su binary not found'"
+
+          echo "--- Root Binary Check ---"
+          docker exec dockerify-android adb shell "ls -la /system/xbin/su 2>/dev/null || ls -la /system/bin/su 2>/dev/null || echo 'Note: su binary location varies by ROM'"
           echo ""
-          echo "--- Checking root with su ---"
-          docker exec dockerify-android adb shell "su -c 'whoami' 2>/dev/null || echo 'su not available'"
+
+          echo "--- Magisk Check ---"
+          docker exec dockerify-android adb shell "ls -la /system/xbin/magisk 2>/dev/null || ls -la /data/adb/magisk/magisk 2>/dev/null || echo 'Magisk binary check complete'"
           echo ""
-          echo "--- Checking /system/xbin/magisk ---"
-          docker exec dockerify-android adb shell "ls -la /system/xbin/magisk 2>/dev/null || echo 'Magisk not installed'"
-          echo ""
+
           echo "--- System Properties ---"
+          echo "  Android Version:"
           docker exec dockerify-android adb shell getprop ro.build.version.release
+          echo "  Security Patch:"
           docker exec dockerify-android adb shell getprop ro.build.version.security_patch
+          echo "  CPU ABI:"
           docker exec dockerify-android adb shell getprop ro.product.cpu.abi
+          echo "  CPU ABI List:"
           docker exec dockerify-android adb shell getprop ro.product.cpu.abilist
+          echo "  Build Fingerprint:"
+          docker exec dockerify-android adb shell getprop ro.build.fingerprint
           echo ""
-          echo "=== ROOT VERIFICATION COMPLETE ==="
 
-      - name: Install Termux
+          echo "--- ADB Connection Status ---"
+          docker exec dockerify-android adb devices -l
+          echo ""
+
+          echo "--- Disk Usage ---"
+          docker exec dockerify-android adb shell df -h /data 2>/dev/null || docker exec dockerify-android adb shell df /data
+          echo ""
+
+          echo "--- Memory Status ---"
+          docker exec dockerify-android adb shell cat /proc/meminfo | head -5
+          echo ""
+
+          echo "============================================"
+          echo "  SYSTEM VERIFICATION COMPLETE"
+          echo "============================================"
+
+      - name: Install Termux Terminal Emulator
         run: |
-          echo "=== INSTALLING TERMUX ==="
-          # Download Termux APK from GitHub releases
-          TERMUX_VERSION="0.118.1"
-          TERMUX_URL="https://github.com/termux/termux-app/releases/download/v${TERMUX_VERSION}/termux-app_v${TERMUX_VERSION}+github-debug_universal.apk"
-          echo "Downloading Termux v${TERMUX_VERSION}..."
-          curl -L -o /tmp/termux.apk "${TERMUX_URL}" 2>&1 || true
-          if [ -f /tmp/termux.apk ] && [ $(stat -c%s /tmp/termux.apk 2>/dev/null || echo 0) -gt 1000000 ]; then
-            echo "Installing Termux APK..."
+          echo "============================================"
+          echo "  INSTALLING TERMUX"
+          echo "============================================"
+          echo ""
+
+          TERMUX_URL="https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3%2Bgithub-debug_x86.apk"
+          echo "Downloading Termux v0.118.3 (x86) for the emulator..."
+          curl -L -o /tmp/termux.apk "${TERMUX_URL}" 2>&1
+
+          TERMUX_SIZE=$(stat -c%s /tmp/termux.apk 2>/dev/null || echo 0)
+          echo "Downloaded: ${TERMUX_SIZE} bytes"
+
+          if [ "${TERMUX_SIZE}" -gt 1000000 ]; then
+            echo "Installing Termux APK via ADB..."
             docker cp /tmp/termux.apk dockerify-android:/data/local/tmp/termux.apk
-            docker exec dockerify-android adb shell "pm install /data/local/tmp/termux.apk" 2>&1 || true
-            echo "Termux installation complete!"
+            docker exec dockerify-android adb shell "pm install -r /data/local/tmp/termux.apk" 2>&1
+            echo ""
+
+            echo "Verifying installation..."
+            docker exec dockerify-android adb shell "pm path com.termux" 2>/dev/null || echo "Package not found"
+            echo ""
+            echo "✅ Termux installed successfully!"
           else
-            echo "Termux download failed, trying F-Droid version..."
-            curl -L -o /tmp/termux.apk "https://f-droid.org/repo/com.termux_1018.apk" 2>&1 || true
-            if [ -f /tmp/termux.apk ] && [ $(stat -c%s /tmp/termux.apk 2>/dev/null || echo 0) -gt 1000000 ]; then
+            echo "::error::Failed to download Termux APK (size: ${TERMUX_SIZE})"
+            echo "Trying fallback URL..."
+
+            # Try universal APK as fallback
+            curl -L -o /tmp/termux.apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3%2Bgithub-debug_universal.apk" 2>&1
+            TERMUX_SIZE=$(stat -c%s /tmp/termux.apk 2>/dev/null || echo 0)
+
+            if [ "${TERMUX_SIZE}" -gt 1000000 ]; then
               docker cp /tmp/termux.apk dockerify-android:/data/local/tmp/termux.apk
-              docker exec dockerify-android adb shell "pm install /data/local/tmp/termux.apk" 2>&1 || true
-              echo "Termux (F-Droid) installation complete!"
+              docker exec dockerify-android adb shell "pm install -r /data/local/tmp/termux.apk" 2>&1
+              echo "✅ Termux installed (universal build)!"
             else
-              echo "::warning::Failed to install Termux"
+              echo "::error::All Termux download attempts failed."
             fi
           fi
-          echo "=== TERMUX INSTALLATION COMPLETE ==="
 
-      - name: Install ScreenStream
+          echo ""
+          echo "============================================"
+
+      - name: Install ScreenStream App
         run: |
-          echo "=== INSTALLING SCREENSTREAM ==="
-          # Download ScreenStream from GitHub releases
-          SCREENSTREAM_URL="https://github.com/nicehash/NiceHashQuickMiner/releases/download/"
-          # Try ScreenStream from GitHub
-          curl -L -o /tmp/screenstream.apk "https://github.com/dkrivoruchko/ScreenStream/releases/latest/download/app-debug.apk" 2>&1 || true
-          if [ -f /tmp/screenstream.apk ] && [ $(stat -c%s /tmp/screenstream.apk 2>/dev/null || echo 0) -gt 1000000 ]; then
-            echo "Installing ScreenStream APK..."
+          echo "============================================"
+          echo "  INSTALLING SCREENSTREAM"
+          echo "============================================"
+          echo ""
+
+          SCREENSTREAM_URL="https://github.com/dkrivoruchko/ScreenStream/releases/download/4.4.2/ScreenStream-PlayStore-44002.apk"
+          echo "Downloading ScreenStream v4.4.2..."
+          curl -L -o /tmp/screenstream.apk "${SCREENSTREAM_URL}" 2>&1
+
+          SS_SIZE=$(stat -c%s /tmp/screenstream.apk 2>/dev/null || echo 0)
+          echo "Downloaded: ${SS_SIZE} bytes"
+
+          if [ "${SS_SIZE}" -gt 1000000 ]; then
+            echo "Installing ScreenStream APK via ADB..."
             docker cp /tmp/screenstream.apk dockerify-android:/data/local/tmp/screenstream.apk
-            docker exec dockerify-android adb shell "pm install /data/local/tmp/screenstream.apk" 2>&1 || true
-            echo "ScreenStream installation complete!"
+            docker exec dockerify-android adb shell "pm install -r /data/local/tmp/screenstream.apk" 2>&1
+            echo ""
+
+            echo "Verifying installation..."
+            docker exec dockerify-android adb shell "pm path com.github.dkrivoruchko.screenstream" 2>/dev/null || echo "Package path check"
+            echo ""
+            echo "✅ ScreenStream installed successfully!"
           else
-            echo "::warning::Failed to download ScreenStream. Will try to install via browser."
-            echo "Downloading from alternative source..."
-            curl -L -o /tmp/screenstream.apk "https://raw.githubusercontent.com/dkrivoruchko/ScreenStream/master/app/build/outputs/apk/debug/app-debug.apk" 2>&1 || true
-            if [ -f /tmp/screenstream.apk ] && [ $(stat -c%s /tmp/screenstream.apk 2>/dev/null || echo 0) -gt 1000000 ]; then
-              docker cp /tmp/screenstream.apk dockerify-android:/data/local/tmp/screenstream.apk
-              docker exec dockerify-android adb shell "pm install /data/local/tmp/screenstream.apk" 2>&1 || true
-              echo "ScreenStream installation complete!"
-            else
-              echo "::warning::ScreenStream download failed from all sources"
-            fi
+            echo "::error::Failed to download ScreenStream APK (size: ${SS_SIZE})"
           fi
-          echo "=== SCREENSTREAM INSTALLATION COMPLETE ==="
 
-      - name: Configure Android Settings
+          echo ""
+          echo "============================================"
+
+      - name: Configure Android Permissions and Settings
         run: |
-          echo "=== CONFIGURING ANDROID ==="
-          # Allow installation from unknown sources
-          docker exec dockerify-android adb shell settings put secure install_non_market_apps 1 2>/dev/null || true
+          echo "============================================"
+          echo "  CONFIGURING ANDROID SETTINGS"
+          echo "============================================"
+          echo ""
 
-          # Allow ScreenStream to draw over other apps
+          # Enable installation from unknown sources
+          echo "Enabling unknown source installations..."
+          docker exec dockerify-android adb shell settings put secure install_non_market_apps 1 2>/dev/null || true
+          echo "  ✅ Unknown sources enabled"
+
+          # Grant overlay permission to ScreenStream
+          echo "Granting overlay permission to ScreenStream..."
           docker exec dockerify-android adb shell "appops set com.github.dkrivoruchko.screenstream SYSTEM_ALERT_WINDOW allow" 2>/dev/null || true
+          echo "  ✅ SYSTEM_ALERT_WINDOW granted to ScreenStream"
 
           # Disable battery optimization for key apps
+          echo "Disabling battery optimization for Termux..."
           docker exec dockerify-android adb shell dumpsys deviceidle whitelist +com.termux 2>/dev/null || true
-          docker exec dockerify-android adb shell dumpsys deviceidle whitelist +com.github.dkrivoruchko.screenstream 2>/dev/null || true
+          echo "  ✅ Termux battery optimization disabled"
 
-          # List installed packages to verify
-          echo "--- Installed Packages ---"
-          docker exec dockerify-android adb shell "pm list packages | grep -E 'termux|screenstream'"
+          echo "Disabling battery optimization for ScreenStream..."
+          docker exec dockerify-android adb shell dumpsys deviceidle whitelist +com.github.dkrivoruchko.screenstream 2>/dev/null || true
+          echo "  ✅ ScreenStream battery optimization disabled"
+
+          # Launch Termux activity to initialize
+          echo "Initializing Termux..."
+          docker exec dockerify-android adb shell "am start -n com.termux/.activity.TermuxActivity" 2>/dev/null || true
+          echo "  ✅ Termux activity launched"
+
+          # Enable WebRTC-related permissions for ScreenStream
+          echo "Configuring ScreenStream permissions..."
+          docker exec dockerify-android adb shell "pm grant com.github.dkrivoruchko.screenstream android.permission.CAMERA" 2>/dev/null || true
+          docker exec dockerify-android adb shell "pm grant com.github.dkrivoruchko.screenstream android.permission.RECORD_AUDIO" 2>/dev/null || true
+          echo "  ✅ ScreenStream permissions configured"
 
           echo ""
-          echo "=== CONFIGURATION COMPLETE ==="
+          echo "--- Installed Packages Verification ---"
+          docker exec dockerify-android adb shell "pm list packages | grep -E 'termux|screenstream'"
+          echo ""
 
-      - name: Wait for scrcpy-web
+          echo "============================================"
+          echo "  CONFIGURATION COMPLETE"
+          echo "============================================"
+
+      - name: Wait for scrcpy-web to be Ready
         run: |
-          echo "Waiting for scrcpy-web to be ready..."
+          echo "Verifying scrcpy-web streaming server is ready..."
           for i in $(seq 1 120); do
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 2>/dev/null || echo "000")
             if [ "${HTTP_CODE}" != "000" ] && [ "${HTTP_CODE}" != "502" ] && [ "${HTTP_CODE}" != "503" ]; then
-              echo "scrcpy-web ready (HTTP ${HTTP_CODE})"
+              echo "✅ scrcpy-web is ready (HTTP ${HTTP_CODE}) after $((i * 3))s"
               exit 0
             fi
             sleep 3
           done
-          echo "::warning::scrcpy-web may not be fully ready, continuing anyway..."
+          echo "::warning::scrcpy-web may not be fully ready. Continuing anyway..."
 
       - name: Create Public Tunnel
         id: expose
@@ -247,39 +356,52 @@ jobs:
       - name: Print Access Information
         run: |
           echo ""
-          echo "=========================================="
-          echo "  CLOUD ANDROID PHONE IS READY!"
-          echo "=========================================="
+          echo "╔══════════════════════════════════════════════════════╗"
+          echo "║       CLOUD ANDROID PHONE v2.0 — READY!             ║"
+          echo "╠══════════════════════════════════════════════════════╣"
+          echo "║                                                      ║"
+          echo "║  MAIN ACCESS:    ${{ steps.expose.outputs.tunnel-url }}              ║"
+          echo "║  SHELL ACCESS:   ${{ steps.expose.outputs.tunnel-url }}#!action=shell&udid=dockerify-android%3A5555"
+          echo "║  DEVICE TRACKER: ${{ steps.expose.outputs.tunnel-url }}#!action=devices"
+          echo "║                                                      ║"
+          echo "║  Android:        API 34 (Android 14)                 ║"
+          echo "║  Resolution:     ${{ github.event.inputs.resolution }}              ║"
+          echo "║  RAM:            ${{ github.event.inputs.ram_mb }}MB                     ║"
+          echo "║  Root:           ${{ github.event.inputs.enable_root }}                     ║"
+          echo "║  GAPPS:          ${{ github.event.inputs.enable_gapps }}                     ║"
+          echo "║  Session:        ${{ github.event.inputs.session_hours }} hours max              ║"
+          echo "║                                                      ║"
+          echo "╚══════════════════════════════════════════════════════╝"
           echo ""
-          echo "  URL: ${{ steps.expose.outputs.tunnel-url }}"
-          echo "  Android: API 34 (Android 14)"
-          echo "  Resolution: ${{ github.event.inputs.resolution }}"
-          echo "  RAM: ${{ github.event.inputs.ram_mb }}MB"
-          echo "  Root: ${{ github.event.inputs.enable_root }}"
-          echo "  GAPPS: ${{ github.event.inputs.enable_gapps }}"
-          echo "  Session: ${{ github.event.inputs.session_hours }} hours max"
-          echo ""
-          echo "  Shell: ${{ steps.expose.outputs.tunnel-url }}#!action=shell&udid=dockerify-android%3A5555"
-          echo ""
-          echo "  Open the URL in your browser to use your phone!"
-          echo "=========================================="
+          echo "Features installed:"
+          echo "  ✅ Termux v0.118.3 — Terminal emulator"
+          echo "  ✅ ScreenStream v4.4.2 — WebRTC screen streaming"
+          echo "  ✅ Root access (Magisk)"
+          echo "  ✅ ARM translation enabled"
+          echo "  ✅ Performance optimizations applied"
 
       - name: Save Access URL as Artifact
         run: |
           mkdir -p /tmp/access-info
-          echo "${{ steps.expose.outputs.tunnel-url }}" > /tmp/access-info/url.txt
-          echo "" >> /tmp/access-info/url.txt
-          echo "Android: API 34 (Android 14)" >> /tmp/access-info/url.txt
-          echo "Resolution: ${{ github.event.inputs.resolution }}" >> /tmp/access-info/url.txt
-          echo "RAM: ${{ github.event.inputs.ram_mb }}MB" >> /tmp/access-info/url.txt
-          echo "Root: ${{ github.event.inputs.enable_root }}" >> /tmp/access-info/url.txt
-          echo "GAPPS: ${{ github.event.inputs.enable_gapps }}" >> /tmp/access-info/url.txt
-          echo "Session: ${{ github.event.inputs.session_hours }}h max" >> /tmp/access-info/url.txt
-          echo "" >> /tmp/access-info/url.txt
-          echo "Shell: ${{ steps.expose.outputs.tunnel-url }}#!action=shell&udid=dockerify-android%3A5555" >> /tmp/access-info/url.txt
-          echo "" >> /tmp/access-info/url.txt
-          echo "Open the URL above in your browser to use your Cloud Android Phone!" >> /tmp/access-info/url.txt
-          cat /tmp/access-info/url.txt
+          cat > /tmp/access-info/access-info.txt << EOF
+          ╔══════════════════════════════════════════════════════╗
+          ║       CLOUD ANDROID PHONE v2.0 — ACCESS INFO         ║"
+          ╠══════════════════════════════════════════════════════╣
+          ║                                                      ║
+          ║  MAIN ACCESS:    ${{ steps.expose.outputs.tunnel-url }}              ║
+          ║  SHELL ACCESS:   ${{ steps.expose.outputs.tunnel-url }}#!action=shell&udid=dockerify-android%3A5555"
+          ║  DEVICE TRACKER: ${{ steps.expose.outputs.tunnel-url }}#!action=devices"
+          ║                                                      ║
+          ║  Android:        API 34 (Android 14)                 ║
+          ║  Resolution:     ${{ github.event.inputs.resolution }}              ║
+          ║  RAM:            ${{ github.event.inputs.ram_mb }}MB                     ║
+          ║  Root:           ${{ github.event.inputs.enable_root }}                     ║
+          ║  GAPPS:          ${{ github.event.inputs.enable_gapps }}                     ║
+          ║  Session:        ${{ github.event.inputs.session_hours }} hours max              ║
+          ║                                                      ║
+          ╚══════════════════════════════════════════════════════╝
+          EOF
+          cat /tmp/access-info/access-info.txt
 
       - name: Upload Access URL Artifact
         uses: actions/upload-artifact@v4
@@ -292,22 +414,29 @@ jobs:
         run: |
           MAX_SECONDS=$((${{ github.event.inputs.session_hours }} * 3600))
           START_TIME=$(date +%s)
+          TUNNEL_URL="${{ steps.expose.outputs.tunnel-url }}"
+
           echo "Session active. Max duration: ${{ github.event.inputs.session_hours }}h"
-          echo "Your phone is accessible at: ${{ steps.expose.outputs.tunnel-url }}"
+          echo "Your phone is accessible at: ${TUNNEL_URL}"
           echo ""
+
           while true; do
             ELAPSED=$(($(date +%s) - START_TIME))
             REMAINING=$((MAX_SECONDS - ELAPSED))
+
             if [ "${REMAINING}" -le 0 ]; then
               echo "TIME LIMIT REACHED (${MAX_SECONDS}s). Session ended."
               exit 0
             fi
+
             BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             HOURS=$((REMAINING / 3600))
             MINUTES=$(((REMAINING % 3600) / 60))
+
             if [ $((ELAPSED % 600)) -eq 0 ]; then
-              echo "[$(date -u)] Status: boot=${BOOT} | remaining=${HOURS}h ${MINUTES}m"
+              echo "[$(date -u)] Status: boot=${BOOT} | remaining=${HOURS}h ${MINUTES}m | tunnel=${TUNNEL_URL}"
             fi
+
             sleep 60
           done
 
@@ -318,7 +447,7 @@ jobs:
     steps:
       - name: Stop All Services
         run: |
-          echo "Stopping cloud phone..."
+          echo "Stopping cloud phone services..."
           docker stop scrcpy-web 2>/dev/null && docker rm scrcpy-web 2>/dev/null || true
           docker stop dockerify-android 2>/dev/null && docker rm dockerify-android 2>/dev/null || true
           docker system prune -f 2>/dev/null || true

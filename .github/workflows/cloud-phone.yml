@@ -11,14 +11,6 @@ on:
         options:
           - start
           - stop
-      android_version:
-        description: 'Android Version (API Level)'
-        required: false
-        default: '34'
-        type: choice
-        options:
-          - '33'
-          - '34'
       resolution:
         description: 'Screen Resolution'
         required: false
@@ -34,6 +26,11 @@ on:
         type: boolean
       enable_gapps:
         description: 'Enable Google Apps (PICO)'
+        required: false
+        default: true
+        type: boolean
+      enable_arm:
+        description: 'Enable ARM Translation'
         required: false
         default: true
         type: boolean
@@ -58,98 +55,153 @@ jobs:
 
       - name: Enable KVM
         run: |
+          echo "Checking KVM..."
           if [ -e /dev/kvm ]; then
-            echo "KVM: Available"
             sudo chmod 666 /dev/kvm
+            ls -la /dev/kvm
+            echo "KVM enabled successfully"
           else
-            echo "KVM: Not available (software rendering)"
+            echo "::warning::KVM not available on this runner"
           fi
 
-      - name: Build Docker Image
+      - name: Pull Docker Images
         run: |
-          docker build \
-            --build-arg DISPLAY_WIDTH=$(echo "${{ github.event.inputs.resolution }}" | cut -dx -f1) \
-            --build-arg DISPLAY_HEIGHT=$(echo "${{ github.event.inputs.resolution }}" | cut -dx -f2) \
-            --build-arg RAM_SIZE=${{ github.event.inputs.ram_mb }} \
-            -t cloud-android-phone:latest \
-            .
+          docker pull shmayro/dockerify-android:latest
+          docker pull shmayro/scrcpy-web:latest
+          echo "Images pulled successfully"
 
-      - name: Start Container
+      - name: Start Android Emulator
         run: |
-          RES_W=$(echo "${{ github.event.inputs.resolution }}" | cut -dx -f1)
-          RES_H=$(echo "${{ github.event.inputs.resolution }}" | cut -dx -f2)
           docker run -d \
-            --name cloud-phone \
+            --name dockerify-android \
             --privileged \
-            --device /dev/kvm:/dev/kvm \
-            -p 8000:8000 \
+            --device /dev/kvm \
             -p 5555:5555 \
-            -e DISPLAY_WIDTH="${RES_W}" \
-            -e DISPLAY_HEIGHT="${RES_H}" \
-            -e RAM_SIZE="${{ github.event.inputs.ram_mb }}" \
-            -e SCRCPY_WEB_PORT=8000 \
-            -e ARM_TRANSLATION=1 \
+            -e DNS=one.one.one.one \
+            -e RAM_SIZE=${{ github.event.inputs.ram_mb }} \
+            -e "SCREEN_RESOLUTION=${{ github.event.inputs.resolution }}" \
             -e ROOT_SETUP=$(echo "${{ github.event.inputs.enable_root }}" | tr '[:upper:]' '[:lower:]') \
             -e GAPPS_SETUP=$(echo "${{ github.event.inputs.enable_gapps }}" | tr '[:upper:]' '[:lower:]') \
-            -e SESSION_MAX_HOURS=${{ github.event.inputs.session_hours }} \
-            cloud-android-phone:latest
+            -e ARM_TRANSLATION=$(echo "${{ github.event.inputs.enable_arm }}" | tr '[:upper:]' '[:lower:]') \
+            shmayro/dockerify-android:latest
+          echo "Android emulator starting..."
+
+      - name: Start scrcpy-web
+        run: |
+          sleep 30
+          docker run -d \
+            --name scrcpy-web \
+            --privileged \
+            -p 8000:8000 \
+            --link dockerify-android \
+            shmayro/scrcpy-web:latest sh -c \
+            "adb connect dockerify-android:5555 && npm start"
+          echo "scrcpy-web starting..."
 
       - name: Wait for Boot
         run: |
+          echo "Waiting for Android to boot..."
           for i in $(seq 1 300); do
-            BOOT=$(docker exec cloud-phone /opt/android-sdk/cmdline-tools/latest/bin/adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
+            BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
-              echo "Boot completed after $((i * 2))s"
-              exit 0
+              echo "Android boot completed after $((i * 2))s"
+              # Connect ADB for scrcpy-web
+              docker exec dockerify-android adb start-server
+              break
             fi
-            [ $i -eq 90 ] && echo "  ... 3 min elapsed"
-            [ $i -eq 180 ] && echo "  ... 6 min elapsed"
-            [ $i -eq 270 ] && echo "  ... 9 min elapsed"
+            if [ $((i % 30)) -eq 0 ]; then
+              echo "  ... $((i * 2))s elapsed (boot_completed=${BOOT})"
+            fi
             sleep 2
           done
-          echo "Boot timeout"
-          docker logs cloud-phone --tail 50
-          exit 1
 
-      - name: Optimize
+          # Optimize Android settings
+          docker exec dockerify-android adb shell settings put global window_animation_scale 0 2>/dev/null || true
+          docker exec dockerify-android adb shell settings put global transition_animation_scale 0 2>/dev/null || true
+          docker exec dockerify-android adb shell settings put global animator_duration_scale 0 2>/dev/null || true
+          docker exec dockerify-android adb shell settings put system screen_off_timeout 2147483647 2>/dev/null || true
+          echo "Android optimized"
+
+      - name: Wait for scrcpy-web
         run: |
-          docker exec cloud-phone /opt/android-sdk/cmdline-tools/latest/bin/adb -s emulator-5555 shell settings put global window_animation_scale 0
-          docker exec cloud-phone /opt/android-sdk/cmdline-tools/latest/bin/adb -s emulator-5555 shell settings put global transition_animation_scale 0
-          docker exec cloud-phone /opt/android-sdk/cmdline-tools/latest/bin/adb -s emulator-5555 shell settings put global animator_duration_scale 0
-          docker exec cloud-phone /opt/android-sdk/cmdline-tools/latest/bin/adb -s emulator-5555 shell settings put system screen_off_timeout 2147483647
+          echo "Waiting for scrcpy-web to be ready..."
+          for i in $(seq 1 120); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 2>/dev/null || echo "000")
+            if [ "${HTTP_CODE}" != "000" ] && [ "${HTTP_CODE}" != "502" ] && [ "${HTTP_CODE}" != "503" ]; then
+              echo "scrcpy-web ready (HTTP ${HTTP_CODE}) after $((i * 3))s"
+              exit 0
+            fi
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "  ... $((i * 3))s elapsed (HTTP ${HTTP_CODE})"
+            fi
+            sleep 3
+          done
+          echo "::warning::scrcpy-web may not be fully ready yet"
 
       - name: Start NPort Tunnel
         id: tunnel
         run: |
-          npm install -g nport 2>/dev/null || npm install -g --force nport
+          npm install -g nport
           SUBDOMAIN="caphone-$(date +%s | sha256sum | head -c 6)"
-          nport 8000 -s "${SUBDOMAIN}" > /tmp/nport.log 2>&1 &
+          echo "Tunnel: https://${SUBDOMAIN}.nport.link"
+          nohup nport 8000 -s "${SUBDOMAIN}" > /tmp/nport.log 2>&1 &
+          
           for i in $(seq 1 30); do
             sleep 3
             if grep -q "nport.link" /tmp/nport.log 2>/dev/null; then
               TUNNEL_URL=$(grep -oP 'https://[a-zA-Z0-9.-]+\.nport\.link' /tmp/nport.log | head -1)
-              echo "url=${TUNNEL_URL}" >> "${GITHUB_OUTPUT}"
-              exit 0
+              if [ -n "${TUNNEL_URL}" ]; then
+                echo "url=${TUNNEL_URL}" >> "${GITHUB_OUTPUT}"
+                echo "Tunnel active: ${TUNNEL_URL}"
+                exit 0
+              fi
             fi
           done
           echo "url=http://localhost:8000" >> "${GITHUB_OUTPUT}"
+          echo "::warning::Could not establish NPort tunnel, using localhost"
 
-      - name: Print Access
+      - name: Print Access Info
         run: |
           echo ""
           echo "=========================================="
           echo "  CLOUD ANDROID PHONE IS READY!"
+          echo ""
           echo "  URL: ${{ steps.tunnel.outputs.url }}"
-          echo "  Android: API ${{ github.event.inputs.android_version }}"
+          echo "  Android: API 34 (Android 14)"
           echo "  Resolution: ${{ github.event.inputs.resolution }}"
-          echo "  Duration: Up to ${{ github.event.inputs.session_hours }}h"
+          echo "  RAM: ${{ github.event.inputs.ram_mb }}MB"
+          echo "  Max Duration: ${{ github.event.inputs.session_hours }}h"
+          echo ""
+          echo "  Features:"
+          echo "  - Root: ${{ github.event.inputs.enable_root }}"
+          echo "  - Google Apps: ${{ github.event.inputs.enable_gapps }}"
+          echo "  - ARM Translation: ${{ github.event.inputs.enable_arm }}"
           echo "=========================================="
+          echo ""
 
-      - name: Keep Alive
+      - name: Keep Alive & Monitor
         run: |
+          MAX_SECONDS=$((${{ github.event.inputs.session_hours }} * 3600))
+          START_TIME=$(date +%s)
+          
+          echo "Session started. Max duration: ${{ github.event.inputs.session_hours }}h"
+          
           while true; do
-            BOOT=$(docker exec cloud-phone /opt/android-sdk/cmdline-tools/latest/bin/adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
-            echo "[$(date -u)] Status: boot_completed=${BOOT}"
+            ELAPSED=$(($(date +%s) - START_TIME))
+            REMAINING=$((MAX_SECONDS - ELAPSED))
+            
+            if [ "${REMAINING}" -le 0 ]; then
+              echo "TIME LIMIT REACHED - shutting down"
+              docker stop scrcpy-web 2>/dev/null
+              docker stop dockerify-android 2>/dev/null
+              exit 0
+            fi
+            
+            BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
+            HOURS=$((REMAINING / 3600))
+            MINUTES=$(((REMAINING % 3600) / 60))
+            
+            echo "[$(date -u)] boot=${BOOT} remaining=${HOURS}h ${MINUTES}m"
             sleep 300
           done
 
@@ -158,7 +210,10 @@ jobs:
     if: github.event.inputs.action == 'stop'
     runs-on: ubuntu-latest
     steps:
-      - name: Stop
+      - name: Stop Containers
         run: |
-          docker stop cloud-phone 2>/dev/null && docker rm cloud-phone 2>/dev/null || true
-          echo "Stopped"
+          docker stop scrcpy-web 2>/dev/null && docker rm scrcpy-web 2>/dev/null || true
+          docker stop dockerify-android 2>/dev/null && docker rm dockerify-android 2>/dev/null || true
+          pkill -f "nport" 2>/dev/null || true
+          docker system prune -f 2>/dev/null || true
+          echo "All containers stopped and cleaned up"

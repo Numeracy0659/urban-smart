@@ -1,11 +1,8 @@
 .git
 .github
-.gitlab-ci.yml
 .gitignore
 README.md
-docs/
-*.md
+*.log
 backup/
 *.tar.gz
 node_modules/
-*.log

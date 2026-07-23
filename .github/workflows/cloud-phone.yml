@@ -96,25 +96,28 @@ jobs:
 
       - name: Wait for Android Boot
         run: |
-          echo "Waiting for Android to boot..."
-          for i in $(seq 1 450); do
+          echo "Waiting for Android to boot (first boot with ROOT+GAPPS takes 10-15 mins)..."
+          BOOT="0"
+          for i in $(seq 1 1200); do
             BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
-              echo "Android boot completed after $((i * 2))s"
+              echo "Android boot completed after $((i))s"
               break
             fi
-            if [ $((i % 30)) -eq 0 ]; then
-              echo "  ... booting ($((i * 2))s) — checking adb status..."
+            if [ $((i % 60)) -eq 0 ]; then
+              echo "  ... booting ($((i))s) — checking status..."
               docker exec dockerify-android adb devices 2>/dev/null || true
-              docker exec dockerify-android adb shell getprop init.svc.bootanim 2>/dev/null || true
+              # Check Docker logs for the official first-boot success message
+              docker logs --since 60s dockerify-android 2>&1 | grep -E "Broadcast completed|Success !!" || true
             fi
-            sleep 2
+            sleep 1
           done
+          
           if [ "${BOOT}" != "1" ]; then
-            echo "::warning::Android boot may be slow — checking if partial boot..."
-            docker exec dockerify-android adb devices 2>/dev/null || true
-            docker exec dockerify-android adb shell getprop sys.boot_completed 2>/dev/null || true
-            # Continue anyway — partial boot may still work for scrcpy
+            echo "::warning::Android boot didn't fully complete in 20 minutes. Checking Docker logs..."
+            docker logs --tail 50 dockerify-android
+          else
+            echo "Boot fully successful!"
           fi
 
       - name: Optimize Android

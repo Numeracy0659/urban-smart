@@ -1,0 +1,21 @@
+{
+  "name": "urban-smart",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Numeracy0659/urban-smart.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Numeracy0659/urban-smart/issues"
+  },
+  "homepage": "https://github.com/Numeracy0659/urban-smart#readme"
+}

@@ -1,0 +1,293 @@
+name: Professional Cloud Android Phone
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      persist:
+        description: 'Restore previous session?'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - yes
+          - no
+      encrypt:
+        description: 'Encrypt session data? (GPG)'
+        required: false
+        default: 'no'
+        type: choice
+        options:
+          - yes
+          - no
+
+permissions:
+  contents: read
+
+jobs:
+  phone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # 1. Install dependencies & kernel modules
+      # ------------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            android-tools-adb \
+            linux-modules-extra-$(uname -r) \
+            mesa-utils \
+            libgl1-mesa-dri
+
+      - name: Load kernel modules
+        run: |
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+          sudo modprobe ashmem_linux || true
+          sudo modprobe i915 || true  # Intel GPU
+          sudo modprobe amdgpu || true # AMD GPU
+
+      - name: Verify GPU access
+        run: |
+          ls -la /dev/dri/ || echo "No DRI devices found"
+          glxinfo | grep "OpenGL renderer" || echo "No OpenGL renderer"
+
+      # ------------------------------------------------------------
+      # 2. Session persistence
+      # ------------------------------------------------------------
+      - name: Restore session data (manual)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.persist == 'yes'
+        uses: actions/download-artifact@v4
+        with:
+          name: android-data
+          path: ./android-data
+        continue-on-error: true
+
+      - name: Restore session data (push)
+        if: github.event_name == 'push'
+        uses: actions/download-artifact@v4
+        with:
+          name: android-data
+          path: ./android-data
+        continue-on-error: true
+
+      - name: Decrypt session (manual only)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.encrypt == 'yes' && github.event.inputs.persist == 'yes'
+        run: |
+          if [ -f ./android-data/data.tar.gz.gpg ]; then
+            gpg --batch --passphrase "${{ secrets.GPG_PASSPHRASE }}" -d ./android-data/data.tar.gz.gpg > ./android-data/data.tar.gz
+            rm -f ./android-data/data.tar.gz.gpg
+            tar -xzf ./android-data/data.tar.gz -C ./android-data/
+            rm -f ./android-data/data.tar.gz
+          fi
+
+      # ------------------------------------------------------------
+      # 3. Create the professional setup script
+      # ------------------------------------------------------------
+      - name: Create setup script
+        run: |
+          cat > setup.sh << 'SCRIPT'
+          #!/bin/bash
+          set -e
+
+          echo "================================================"
+          echo "📱 PROFESSIONAL CLOUD ANDROID PHONE"
+          echo "================================================"
+          echo "GPU: Hardware acceleration enabled"
+          echo "ARM Translation: Enabled (libndk)"
+          echo "Streaming: ws-scrcpy (60 FPS)"
+          echo "Resolution: 1440x3200 @ 560 DPI"
+          echo "================================================"
+
+          # --------------------------------------------
+          # Start Redroid with GPU passthrough
+          # --------------------------------------------
+          echo "🚀 Starting Redroid with hardware acceleration..."
+
+          # Detect GPU and set appropriate flags
+          GPU_FLAGS=""
+          if [ -e /dev/dri/renderD128 ]; then
+            GPU_FLAGS="--device /dev/dri:/dev/dri"
+            echo "✅ GPU passthrough enabled (/dev/dri)"
+          fi
+
+          docker run -d --name redroid \
+            --privileged \
+            $GPU_FLAGS \
+            -v $(pwd)/android-data:/data \
+            -p 5555:5555 \
+            redroid/redroid:14.0.0_64only-latest \
+            androidboot.redroid_gpu_mode=host \
+            androidboot.redroid_width=1440 \
+            androidboot.redroid_height=3200 \
+            androidboot.redroid_dpi=560 \
+            androidboot.redroid_fps=60 \
+            androidboot.redroid_arm_translation=enabled \
+            androidboot.redroid_arm_translation_32bit=enabled \
+            androidboot.use_memfd=true
+
+          echo "⏳ Waiting for Redroid to boot..."
+          sleep 30
+
+          adb kill-server
+          adb start-server
+
+          for i in {1..30}; do
+            if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
+              echo "✅ ADB connected"
+              break
+            fi
+            sleep 5
+          done
+
+          for i in {1..30}; do
+            if adb -s localhost:5555 shell "echo ready" 2>/dev/null | grep -q "ready"; then
+              echo "✅ Device ready"
+              break
+            fi
+            sleep 5
+          done
+
+          # --------------------------------------------
+          # Enable ARM translation
+          # --------------------------------------------
+          echo "🔧 Enabling ARM translation..."
+          adb -s localhost:5555 shell setprop persist.sys.nativebridge 1
+          adb -s localhost:5555 shell setprop persist.sys.nativebridge.enable 1
+
+          # Verify ARM translation
+          ARM_STATUS=$(adb -s localhost:5555 shell getprop persist.sys.nativebridge)
+          echo "ARM Translation Status: $ARM_STATUS"
+
+          # --------------------------------------------
+          # Start ws-scrcpy (60 FPS streaming)
+          # --------------------------------------------
+          echo "📱 Starting ws-scrcpy on port 8000..."
+          docker run -d --name scrcpy-web \
+            --network host \
+            --privileged \
+            shmayro/scrcpy-web:latest \
+            sh -c "
+              for i in {1..30}; do
+                if adb connect localhost:5555 2>/dev/null | grep -q 'connected'; then
+                  break
+                fi
+                sleep 2
+              done
+              npm start
+            "
+
+          echo "⏳ Waiting for web server on port 8000..."
+          for i in {1..40}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200"; then
+              echo "✅ Web server ready"
+              break
+            fi
+            sleep 3
+          done
+
+          docker logs scrcpy-web --tail 20
+
+          # --------------------------------------------
+          # NPort tunnel
+          # --------------------------------------------
+          echo "🔗 Starting NPort tunnel..."
+          AUTH_PASS=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
+          npx nport 8000 -s cloud-phone --auth admin:$AUTH_PASS --language en > nport.log 2>&1 &
+          NPORT_PID=$!
+          echo $NPORT_PID > nport.pid
+
+          for i in {1..60}; do
+            if curl -s -o /dev/null -w "%{http_code}" https://cloud-phone.nport.link | grep -q "200\|401\|403"; then
+              echo "✅ Tunnel live"
+              break
+            fi
+            sleep 5
+          done
+          TUNNEL_URL="https://cloud-phone.nport.link"
+
+          # --------------------------------------------
+          # Display info
+          # --------------------------------------------
+          echo "================================================"
+          echo "🌐 ANDROID PHONE IS READY"
+          echo "================================================"
+          echo "📱 Android 14 (64-bit) with GPU acceleration"
+          echo "📱 ARM Translation: Enabled"
+          echo "📱 Resolution: 1440x3200 @ 560 DPI"
+          echo "📱 Web Interface: $TUNNEL_URL"
+          echo "🔑 Auth: admin:$AUTH_PASS"
+          echo "🔌 ADB (fallback): $TUNNEL_URL:5555"
+          echo "================================================"
+          echo "To control the phone:"
+          echo "  Open $TUNNEL_URL in your browser"
+          echo "  Log in with admin:$AUTH_PASS"
+          echo "  Use Alt+F for fullscreen in scrcpy-web"
+          echo "  Use F11 for browser fullscreen"
+          echo ""
+          echo "To use ADB locally:"
+          echo "  adb connect $TUNNEL_URL:5555"
+          echo "  scrcpy -s $TUNNEL_URL:5555"
+          echo "================================================"
+
+          # --------------------------------------------
+          # Keep alive
+          # --------------------------------------------
+          echo "⏳ Keeping phone alive for 340 minutes..."
+          sleep 340m
+          SCRIPT
+
+          chmod +x setup.sh
+
+      # ------------------------------------------------------------
+      # 4. Run the setup
+      # ------------------------------------------------------------
+      - name: Run Redroid setup
+        run: bash setup.sh
+
+      # ------------------------------------------------------------
+      # 5. Save session
+      # ------------------------------------------------------------
+      - name: Save session
+        if: always()
+        run: |
+          if [ -d ./android-data ]; then
+            sudo chown -R $(id -u):$(id -g) ./android-data 2>/dev/null || true
+            sudo chmod -R 755 ./android-data 2>/dev/null || true
+          fi
+
+          if [ -d ./android-data ] && [ "$(ls -A ./android-data 2>/dev/null)" ]; then
+            echo "📦 Creating backup..."
+            tar -czf data.tar.gz -C ./android-data . || true
+            if [ -f data.tar.gz ]; then
+              mv data.tar.gz ./android-data/
+              echo "✅ Backup created"
+            else
+              echo "⚠️ Backup failed"
+            fi
+          else
+            echo "⚠️ No data to save"
+          fi
+
+      - name: Upload session artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-data
+          path: ./android-data/*
+          retention-days: 90
+
+      # ------------------------------------------------------------
+      # 6. Cleanup
+      # ------------------------------------------------------------
+      - name: Cleanup
+        if: always()
+        run: |
+          kill $(cat nport.pid) 2>/dev/null || true
+          docker stop redroid scrcpy-web 2>/dev/null || true
+          docker rm redroid scrcpy-web 2>/dev/null || true
+          sudo rm -rf ./android-data 2>/dev/null || true

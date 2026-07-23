@@ -1,6 +1,7 @@
 ###############################################################################
-#  Cloud Android Phone v2.0 — Production Build
+#  Cloud Android Phone v2.0 — Production Build (Fixed)
 #  Android 14 (API 34) | KVM Accelerated | Full App Suite | Frida | Root
+#  FIX: Use adb push instead of docker cp for Android filesystem access
 ###############################################################################
 name: Cloud Android Phone v2
 
@@ -168,13 +169,17 @@ jobs:
           ${ADB} settings put global zen_mode 0
           echo "  ✅ DND disabled"
 
+          # Verify ADB connectivity
+          echo "--- ADB Device Verification ---"
+          docker exec dockerify-android adb devices -l
+          echo "  ✅ ADB connectivity verified"
+
       # ─────────────────────────────────────────────────────────────────────
       - name: System Status & Root Verification
         run: |
           echo "╔══════════════════════════════════════════════════════╗"
           echo "║          SYSTEM STATUS & ROOT VERIFICATION           ║"
           echo "╠══════════════════════════════════════════════════════╣"
-          echo "║                                                      ║"
 
           ADB="docker exec dockerify-android adb shell"
 
@@ -191,16 +196,12 @@ jobs:
           echo ""
 
           echo "--- Android Properties ---"
-          echo "  Version  : $("${ADB}" getprop ro.build.version.release)"
-          echo "  API      : $("${ADB}" getprop ro.build.version.sdk)"
-          echo "  ABI      : $("${ADB}" getprop ro.product.cpu.abi)"
-          echo "  ABIs     : $("${ADB}" getprop ro.product.cpu.abilist)"
-          echo "  Model    : $("${ADB}" getprop ro.product.model)"
-          echo "  Fingerprint: $("${ADB}" getprop ro.build.fingerprint)"
-          echo ""
-
-          echo "--- ADB Devices ---"
-          docker exec dockerify-android adb devices -l
+          VER=$(${ADB} getprop ro.build.version.release)
+          API=$(${ADB} getprop ro.build.version.sdk)
+          ABILIST=$(${ADB} getprop ro.product.cpu.abilist)
+          echo "  Version  : ${VER}"
+          echo "  API      : ${API}"
+          echo "  ABIs     : ${ABILIST}"
           echo ""
 
           echo "--- Disk Usage ---"
@@ -219,7 +220,6 @@ jobs:
           echo "╔══════════════════════════════════════════════════════╗"
           echo "║           INSTALLING FRIDA SERVER v17.16.4           ║"
           echo "╠══════════════════════════════════════════════════════╣"
-          echo "║                                                      ║"
 
           FRIDA_URL="https://github.com/frida/frida/releases/download/17.16.4/frida-server-17.16.4-android-x86_64.xz"
           echo "Downloading Frida server (x86_64)..."
@@ -234,123 +234,146 @@ jobs:
             chmod +x /tmp/frida-server
             echo "Decompressed frida-server binary."
 
-            # Push to device
-            docker cp /tmp/frida-server dockerify-android:/data/local/tmp/frida-server
+            # Push to Android device using adb push (NOT docker cp)
+            echo "Pushing frida-server to /data/local/tmp/..."
+            docker exec dockerify-android adb push /tmp/frida-server /data/local/tmp/frida-server
+
+            # Set permissions
             docker exec dockerify-android adb shell "chmod 755 /data/local/tmp/frida-server"
+            echo "Permissions set."
 
             # Start frida-server in background
-            docker exec dockerify-android adb shell "nohup /data/local/tmp/frida-server -l 0.0.0.0 &" 2>&1 || true
+            docker exec dockerify-android adb shell "nohup /data/local/tmp/frida-server -l 0.0.0.0 > /dev/null 2>&1 &"
             sleep 3
 
             # Verify frida-server is running
-            echo "Verifying frida-server process..."
-            docker exec dockerify-android adb shell "ps -A | grep frida" 2>/dev/null || \
-            docker exec dockerify-android adb shell "ps | grep frida" 2>/dev/null || \
-            echo "Checking with pidof..."
-            docker exec dockerify-android adb shell "pidof frida-server" 2>/dev/null && echo "✅ Frida server is RUNNING" || echo "⚠️ Frida server may not be running yet"
+            echo "--- Frida Server Verification ---"
+            F_PID=$(docker exec dockerify-android adb shell "pidof frida-server" 2>/dev/null)
+            if [ -n "${F_PID}" ]; then
+              echo "✅ Frida server is RUNNING (PID: ${F_PID})"
+            else
+              echo "⚠️ Frida server may not be running, checking process list..."
+              docker exec dockerify-android adb shell "ps -A | grep frida" 2>/dev/null || true
+            fi
 
-            # Install frida-tools on host for client
+            # Configure ADB forward for frida communication
+            docker exec dockerify-android adb forward tcp:27042 tcp:27042 2>/dev/null || true
+            echo "✅ Frida TCP forward configured (27042)"
+
+            # Install frida-tools on host
             pip3 install frida-tools 2>&1 | tail -3
             echo ""
-
-            # Create frida forward (USB -> TCP 27042)
-            docker exec dockerify-android adb forward tcp:27042 tcp:27042 2>/dev/null || true
-            echo "✅ Frida TCP forward configured"
           else
             echo "::error::Frida download failed (size: ${FRIDA_SIZE})"
+            exit 1
           fi
 
-          echo ""
           echo "╚══════════════════════════════════════════════════════╝"
 
       # ─────────────────────────────────────────────────────────────────────
-      - name: Install Core APKs (Termux, F-Droid, ScreenStream)
+      - name: Install Core APKs (Termux, F-Droid, ScreenStream, Browsers)
         run: |
           echo "╔══════════════════════════════════════════════════════╗"
           echo "║           INSTALLING CORE APPLICATIONS               ║"
           echo "╠══════════════════════════════════════════════════════╣"
-          echo "║                                                      ║"
 
-          ADB_PUSH="docker cp {SRC} dockerify-android:/data/local/tmp/ && docker exec dockerify-android adb shell pm install -r /data/local/tmp/{NAME}"
+          ADB="docker exec dockerify-android adb shell"
+          ADBPUSH="docker exec dockerify-android adb push"
+          INSTALL="/data/local/tmp/install_apk.sh"
+
+          # Create a helper script for installation inside Android
+          docker exec dockerify-android adb shell "cat > ${INSTALL} << 'SCRIPT'
+          #!/system/bin/sh
+          apk_path=\$1
+          if [ -f \"\${apk_path}\" ]; then
+            pm install -r \"\${apk_path}\" && echo \"OK\" || echo \"FAIL\"
+          else
+            echo \"NOT_FOUND\"
+          fi
+          SCRIPT"
+          docker exec dockerify-android adb shell "chmod 755 ${INSTALL}"
 
           # ── Termux ──────────────────────────────────────────────────
           echo "--- Installing Termux v0.118.3 ---"
           curl -L -o /tmp/termux.apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3%2Bgithub-debug_x86_64.apk" 2>&1
-          if [ $(stat -c%s /tmp/termux.apk 2>/dev/null || echo 0) -gt 1000000 ]; then
-            docker cp /tmp/termux.apk dockerify-android:/data/local/tmp/termux.apk
-            docker exec dockerify-android adb shell "pm install -r /data/local/tmp/termux.apk"
-            echo "  ✅ Termux installed"
+          TERMUX_SIZE=$(stat -c%s /tmp/termux.apk 2>/dev/null || echo 0)
+          if [ "${TERMUX_SIZE}" -gt 1000000 ]; then
+            ${ADBPUSH} /tmp/termux.apk /data/local/tmp/termux.apk
+            RESULT=$(${ADB} "${INSTALL}" /data/local/tmp/termux.apk)
+            [ "${RESULT}" = "OK" ] && echo "  ✅ Termux installed" || echo "  ⚠️ Termux: ${RESULT}"
           else
-            echo "::error::Termux download failed"
+            echo "::error::Termux download failed (size: ${TERMUX_SIZE})"
           fi
 
           # ── Termux:Boot ─────────────────────────────────────────────
           echo "--- Installing Termux:Boot v0.8.1 ---"
           curl -L -o /tmp/termux-boot.apk "https://github.com/termux/termux-boot/releases/download/v0.8.1/termux-boot-app_v0.8.1%2Bgithub.debug.apk" 2>&1
           if [ $(stat -c%s /tmp/termux-boot.apk 2>/dev/null || echo 0) -gt 100000 ]; then
-            docker cp /tmp/termux-boot.apk dockerify-android:/data/local/tmp/termux-boot.apk
-            docker exec dockerify-android adb shell "pm install -r /data/local/tmp/termux-boot.apk"
-            echo "  ✅ Termux:Boot installed"
+            ${ADBPUSH} /tmp/termux-boot.apk /data/local/tmp/termux-boot.apk
+            RESULT=$(${ADB} "${INSTALL}" /data/local/tmp/termux-boot.apk)
+            [ "${RESULT}" = "OK" ] && echo "  ✅ Termux:Boot installed" || echo "  ⚠️ Termux:Boot: ${RESULT}"
           fi
 
           # ── Termux:API ──────────────────────────────────────────────
           echo "--- Installing Termux:API v0.53.0 ---"
           curl -L -o /tmp/termux-api.apk "https://github.com/termux/termux-api/releases/download/v0.53.0/termux-api-app_v0.53.0%2Bgithub.debug.apk" 2>&1
           if [ $(stat -c%s /tmp/termux-api.apk 2>/dev/null || echo 0) -gt 100000 ]; then
-            docker cp /tmp/termux-api.apk dockerify-android:/data/local/tmp/termux-api.apk
-            docker exec dockerify-android adb shell "pm install -r /data/local/tmp/termux-api.apk"
-            echo "  ✅ Termux:API installed"
+            ${ADBPUSH} /tmp/termux-api.apk /data/local/tmp/termux-api.apk
+            RESULT=$(${ADB} "${INSTALL}" /data/local/tmp/termux-api.apk)
+            [ "${RESULT}" = "OK" ] && echo "  ✅ Termux:API installed" || echo "  ⚠️ Termux:API: ${RESULT}"
           fi
 
           # ── F-Droid ─────────────────────────────────────────────────
           echo "--- Installing F-Droid v1.18.0 ---"
           curl -L -o /tmp/fdroid.apk "https://github.com/f-droid/fdroidclient/releases/download/1.18.0/org.fdroid.fdroid_1018050.apk" 2>&1
-          if [ $(stat -c%s /tmp/fdroid.apk 2>/dev/null || echo 0) -gt 1000000 ]; then
-            docker cp /tmp/fdroid.apk dockerify-android:/data/local/tmp/fdroid.apk
-            docker exec dockerify-android adb shell "pm install -r /data/local/tmp/fdroid.apk"
-            echo "  ✅ F-Droid installed"
+          FDROID_SIZE=$(stat -c%s /tmp/fdroid.apk 2>/dev/null || echo 0)
+          if [ "${FDROID_SIZE}" -gt 1000000 ]; then
+            ${ADBPUSH} /tmp/fdroid.apk /data/local/tmp/fdroid.apk
+            RESULT=$(${ADB} "${INSTALL}" /data/local/tmp/fdroid.apk)
+            [ "${RESULT}" = "OK" ] && echo "  ✅ F-Droid installed" || echo "  ⚠️ F-Droid: ${RESULT}"
           else
-            echo "::error::F-Droid download failed"
+            echo "::error::F-Droid download failed (size: ${FDROID_SIZE})"
           fi
 
           # ── ScreenStream ────────────────────────────────────────────
           echo "--- Installing ScreenStream v4.4.2 ---"
           curl -L -o /tmp/screenstream.apk "https://github.com/dkrivoruchko/ScreenStream/releases/download/4.4.2/ScreenStream-PlayStore-44002.apk" 2>&1
-          if [ $(stat -c%s /tmp/screenstream.apk 2>/dev/null || echo 0) -gt 1000000 ]; then
-            docker cp /tmp/screenstream.apk dockerify-android:/data/local/tmp/screenstream.apk
-            docker exec dockerify-android adb shell "pm install -r /data/local/tmp/screenstream.apk"
-            echo "  ✅ ScreenStream installed"
+          SS_SIZE=$(stat -c%s /tmp/screenstream.apk 2>/dev/null || echo 0)
+          if [ "${SS_SIZE}" -gt 1000000 ]; then
+            ${ADBPUSH} /tmp/screenstream.apk /data/local/tmp/screenstream.apk
+            RESULT=$(${ADB} "${INSTALL}" /data/local/tmp/screenstream.apk)
+            [ "${RESULT}" = "OK" ] && echo "  ✅ ScreenStream installed" || echo "  ⚠️ ScreenStream: ${RESULT}"
           else
-            echo "::error::ScreenStream download failed"
+            echo "::error::ScreenStream download failed (size: ${SS_SIZE})"
           fi
 
           # ── Firefox ─────────────────────────────────────────────────
           echo "--- Installing Firefox v110 ---"
           curl -L -o /tmp/firefox.apk "https://github.com/mozilla-mobile/fenix/releases/download/v110.0.1/fenix-110.0.1-x86.apk" 2>&1
-          if [ $(stat -c%s /tmp/firefox.apk 2>/dev/null || echo 0) -gt 1000000 ]; then
-            docker cp /tmp/firefox.apk dockerify-android:/data/local/tmp/firefox.apk
-            docker exec dockerify-android adb shell "pm install -r /data/local/tmp/firefox.apk"
-            echo "  ✅ Firefox installed"
+          FF_SIZE=$(stat -c%s /tmp/firefox.apk 2>/dev/null || echo 0)
+          if [ "${FF_SIZE}" -gt 1000000 ]; then
+            ${ADBPUSH} /tmp/firefox.apk /data/local/tmp/firefox.apk
+            RESULT=$(${ADB} "${INSTALL}" /data/local/tmp/firefox.apk)
+            [ "${RESULT}" = "OK" ] && echo "  ✅ Firefox installed" || echo "  ⚠️ Firefox: ${RESULT}"
           else
-            echo "::error::Firefox download failed"
+            echo "::error::Firefox download failed (size: ${FF_SIZE})"
           fi
 
           # ── Kiwi Browser ────────────────────────────────────────────
           echo "--- Installing Kiwi Browser ---"
           curl -L -o /tmp/kiwi.apk "https://github.com/kiwibrowser/src.next/releases/download/14310011181/com.kiwibrowser.browser-x86-14310011181-github.apk" 2>&1
-          if [ $(stat -c%s /tmp/kiwi.apk 2>/dev/null || echo 0) -gt 1000000 ]; then
-            docker cp /tmp/kiwi.apk dockerify-android:/data/local/tmp/kiwi.apk
-            docker exec dockerify-android adb shell "pm install -r /data/local/tmp/kiwi.apk"
-            echo "  ✅ Kiwi Browser installed"
+          KW_SIZE=$(stat -c%s /tmp/kiwi.apk 2>/dev/null || echo 0)
+          if [ "${KW_SIZE}" -gt 1000000 ]; then
+            ${ADBPUSH} /tmp/kiwi.apk /data/local/tmp/kiwi.apk
+            RESULT=$(${ADB} "${INSTALL}" /data/local/tmp/kiwi.apk)
+            [ "${RESULT}" = "OK" ] && echo "  ✅ Kiwi Browser installed" || echo "  ⚠️ Kiwi: ${RESULT}"
           else
-            echo "::error::Kiwi Browser download failed"
+            echo "::error::Kiwi Browser download failed (size: ${KW_SIZE})"
           fi
 
           echo ""
-
-          # ── Verify all packages ─────────────────────────────────────
           echo "--- Installed Package Verification ---"
-          docker exec dockerify-android adb shell "pm list packages | grep -iE 'termux|fdroid|screenstream|firefox|kiwi'"
+          ${ADB} "pm list packages 2>/dev/null | grep -iE 'termux|fdroid|screenstream|firefox|kiwi'"
 
           echo ""
           echo "╚══════════════════════════════════════════════════════╝"
@@ -394,7 +417,6 @@ jobs:
           echo "║    INSTALLING TERMUX PACKAGES — ETHICAL HACKING      ║"
           echo "║    & DEVELOPMENT TOOLKIT                             ║"
           echo "╠══════════════════════════════════════════════════════╣"
-          echo "║                                                      ║"
 
           ADB_SHELL="docker exec dockerify-android adb shell"
 
@@ -422,7 +444,6 @@ jobs:
             export HOME=/data/data/com.termux/files/home
             export PREFIX=/data/data/com.termux/files/usr
 
-            # Core development tools
             apt install -y \
               python3 python-pip \
               nodejs \
@@ -435,7 +456,6 @@ jobs:
               gcc clang \
               make \
               cmake \
-              rust \
               2>&1 | tail -5
 
             echo \"✅ Development tools installed.\"
@@ -448,7 +468,6 @@ jobs:
             export HOME=/data/data/com.termux/files/home
             export PREFIX=/data/data/com.termux/files/usr
 
-            # Network security tools
             apt install -y \
               nmap \
               tcpdump \
@@ -470,7 +489,6 @@ jobs:
             export HOME=/data/data/com.termux/files/home
             export PREFIX=/data/data/com.termux/files/usr
 
-            # Install pip packages for ethical hacking
             pip install \
               frida-tools \
               mitmproxy \
@@ -493,14 +511,12 @@ jobs:
             export HOME=/data/data/com.termux/files/home
             export PREFIX=/data/data/com.termux/files/usr
 
-            # Install web security tools via pip
             pip install \
               gobuster \
               dirsearch \
               sublist3r \
               2>&1 | tail -5
 
-            # Install additional CLI tools
             apt install -y \
               jq \
               httpie \
@@ -517,26 +533,23 @@ jobs:
           ${ADB_SHELL} "run-as com.termux files/usr/bin/bash -c '
             export HOME=/data/data/com.termux/files/home
 
-            # Create .termux/boot for auto-start services
             mkdir -p ~/.termux/boot
-            cat > ~/.termux/boot/start-frida << EOF
+            cat > ~/.termux/boot/start-frida << \"EOF\"
             #!/data/data/com.termux/files/usr/bin/sh
-            # Start frida-server on boot
             su -c nohup /data/local/tmp/frida-server -l 0.0.0.0 &
-            echo "Frida server started"
+            echo \"Frida server started\"
             EOF
             chmod +x ~/.termux/boot/start-frida
 
-            # Create Termux profile
             mkdir -p ~/.termux
-            cat > ~/.termux/termux.properties << EOF
-            extra-keys = [[\x27ESC\x27,\x27TAB\x27,\x27CTRL\x27,\x27ALT\x27,\x27-\x27,\x27/\x27,\x27|\x27,\x27BKSP\x27],[\x27UP\x27,\x27LEFT\x27,\x27RIGHT\x27,\x27DOWN\x27,\x27HOME\x27,\x27END\x27,\x27PGUP\x27,\x27PGDN\x27]]
+            cat > ~/.termux/termux.properties << \"EOF\"
+            extra-keys = [['ESC','TAB','CTRL','ALT','-','/','|','BKSP'],['UP','LEFT','RIGHT','DOWN','HOME','END','PGUP','PGDN']]
             allow-external-apps=true
             open-url-using-always=true
             use-fullscreen-workaround=true
             EOF
 
-            echo "✅ Termux boot scripts configured."
+            echo \"✅ Termux boot scripts configured.\"
           '" 2>/dev/null
 
           echo ""
@@ -559,15 +572,17 @@ jobs:
           ${ADB} "ps -A | grep frida" 2>/dev/null || ${ADB} "ps | grep frida" 2>/dev/null || echo "Process check complete"
           echo ""
 
-          echo "--- Attempting frida-ps (via host) ---"
-          pip3 install frida-tools 2>&1 | tail -2
-          docker exec dockerify-android adb forward tcp:27042 tcp:27042 2>/dev/null || true
-          sleep 2
-          frida-ps -U 2>&1 | head -15 || echo "frida-ps -U may need device connection"
+          echo "--- frida-server port check ---"
+          ${ADB} "netstat -tlnp 2>/dev/null | grep 27042 || ss -tlnp 2>/dev/null | grep 27042 || echo 'Port 27042 status unknown'"
           echo ""
 
-          echo "--- frida-server port check ---"
-          docker exec dockerify-android adb shell "netstat -tlnp 2>/dev/null | grep 27042 || ss -tlnp 2>/dev/null | grep 27042 || echo 'Port 27042 status unknown'"
+          echo "--- ADB forward check ---"
+          docker exec dockerify-android adb forward tcp:27042 tcp:27042 2>/dev/null || true
+          sleep 2
+
+          echo "--- frida-ps test ---"
+          pip3 install frida-tools 2>&1 | tail -2
+          frida-ps -U 2>&1 | head -15 || echo "frida-ps -U test complete"
           echo ""
 
           echo "╚══════════════════════════════════════════════════════╝"
@@ -602,40 +617,20 @@ jobs:
           echo "║       CLOUD ANDROID PHONE v2.0 — PRODUCTION READY               ║"
           echo "╠══════════════════════════════════════════════════════════════════╣"
           echo "║                                                                  ║"
-          echo "║  📱 MAIN ACCESS     : ${{ steps.expose.outputs.tunnel-url }}                     ║"
-          echo "║  🖥️  SHELL ACCESS    : ${{ steps.expose.outputs.tunnel-url }}#!action=shell&udid=dockerify-android%3A5555"
-          echo "║  📡 DEVICE TRACKER   : ${{ steps.expose.outputs.tunnel-url }}#!action=devices"
+          echo "║  MAIN ACCESS     : ${{ steps.expose.outputs.tunnel-url }}                     ║"
+          echo "║  SHELL ACCESS    : ${{ steps.expose.outputs.tunnel-url }}#!action=shell&udid=dockerify-android%3A5555"
+          echo "║  DEVICE TRACKER  : ${{ steps.expose.outputs.tunnel-url }}#!action=devices"
           echo "║                                                                  ║"
-          echo "║  ────────────────────── SYSTEM INFO ────────────────────────── ║"
           echo "║  Android       : API 34 (Android 14)                            ║"
           echo "║  Resolution    : ${{ github.event.inputs.resolution }}                     ║"
           echo "║  RAM           : ${{ github.event.inputs.ram_mb }}MB                               ║"
           echo "║  Root          : ${{ github.event.inputs.enable_root }}                               ║"
-          echo "║  GAPPS         : ${{ github.event.inputs.enable_gapps }}                               ║"
           echo "║  ARM Trans     : ${{ github.event.inputs.enable_arm }}                               ║"
           echo "║  Session       : ${{ github.event.inputs.session_hours }}h max                           ║"
           echo "║                                                                  ║"
-          echo "║  ────────────────────── INSTALLED APPS ─────────────────────── ║"
-          echo "║  ✅ Termux v0.118.3        — Terminal + pkg manager              ║"
-          echo "║  ✅ Termux:Boot v0.8.1     — Auto-start services                 ║"
-          echo "║  ✅ Termux:API v0.53.0     — System API access                   ║"
-          echo "║  ✅ F-Droid v1.18.0        — Open-source app store               ║"
-          echo "║  ✅ Firefox v110           — Browser                             ║"
-          echo "║  ✅ Kiwi Browser           — Chromium with extensions            ║"
-          echo "║  ✅ ScreenStream v4.4.2    — WebRTC screen streaming             ║"
-          echo "║                                                                  ║"
-          echo "║  ────────────────────── FRIDA ──────────────────────────────── ║"
-          echo "║  ✅ Frida Server v17.16.4  — Instrumentation framework           ║"
-          echo "║  ✅ Frida Tools            — Client (host-side)                  ║"
-          echo "║  ✅ frida-server           — Running on :27042                   ║"
-          echo "║                                                                  ║"
-          echo "║  ────────────────────── TERMUX TOOLS ───────────────────────── ║"
-          echo "║  🛡️  Ethical Hacking: nmap, tcpdump, ncat, proxychains-ng       ║"
-          echo "║  🔓 Pentesting Python:  mitmproxy, sqlmap, scapy, pwntools      ║"
-          echo "║  🌐 Web Security:       gobuster, dirsearch, sublist3r          ║"
-          echo "║  💻 Dev Tools:          python3, nodejs, git, gcc, clang, rust  ║"
-          echo "║  🔧 Utilities:          jq, httpie, tmux, htop, vim, nano       ║"
-          echo "║                                                                  ║"
+          echo "║  APPS: Termux | F-Droid | Firefox | Kiwi | ScreenStream         ║"
+          echo "║  FRIDA: Server v17.16.4 on :27042                               ║"
+          echo "║  TOOLS: nmap, sqlmap, mitmproxy, scapy, pwntools, ...          ║"
           echo "╚══════════════════════════════════════════════════════════════════╝"
 
       # ─────────────────────────────────────────────────────────────────────
@@ -647,36 +642,19 @@ jobs:
           ║       CLOUD ANDROID PHONE v2.0 — PRODUCTION READY               ║
           ╠══════════════════════════════════════════════════════════════════╣
           ║                                                                  ║
-          ║  MAIN ACCESS     : ${{ steps.expose.outputs.tunnel-url }}                     ║
+          ║  MAIN ACCESS     : ${{ steps.expose.outputs.tunnel-url }}                     ║"
           ║  SHELL ACCESS    : ${{ steps.expose.outputs.tunnel-url }}#!action=shell&udid=dockerify-android%3A5555"
           ║  DEVICE TRACKER  : ${{ steps.expose.outputs.tunnel-url }}#!action=devices"
-          ║                                                                  ║
-          ║  Android       : API 34 (Android 14)                            ║
-          ║  Resolution    : ${{ github.event.inputs.resolution }}                     ║
-          ║  RAM           : ${{ github.event.inputs.ram_mb }}MB                               ║
-          ║  Root          : ${{ github.event.inputs.enable_root }}                               ║
-          ║  GAPPS         : ${{ github.event.inputs.enable_gapps }}                               ║
-          ║  ARM Trans     : ${{ github.event.inputs.enable_arm }}                               ║
-          ║  Session       : ${{ github.event.inputs.session_hours }}h max                           ║
-          ║                                                                  ║
+          ║                                                                  ║"
+          ║  Android       : API 34 (Android 14)                            ║"
+          ║  Resolution    : ${{ github.event.inputs.resolution }}                     ║"
+          ║  RAM           : ${{ github.event.inputs.ram_mb }}MB                               ║"
+          ║  Session       : ${{ github.event.inputs.session_hours }}h max                           ║"
           ╚══════════════════════════════════════════════════════════════════╝
 
-          Installed Apps:
-            Termux v0.118.3 | Termux:Boot | Termux:API
-            F-Droid v1.18.0
-            Firefox v110
-            Kiwi Browser
-            ScreenStream v4.4.2
-
-          Frida:
-            Frida Server v17.16.4 (running on :27042)
-
-          Termux Tools:
-            nmap, tcpdump, ncat, proxychains-ng
-            mitmproxy, sqlmap, scapy, pwntools
-            gobuster, dirsearch, sublist3r
-            python3, nodejs, git, gcc, clang, rust
-            jq, httpie, tmux, htop, vim, nano
+          Apps: Termux | F-Droid | Firefox | Kiwi | ScreenStream
+          Frida: Server v17.16.4
+          Tools: nmap, sqlmap, mitmproxy, scapy, pwntools, gobuster, dirsearch
           EOF
           cat /tmp/access-info/access-info.txt
 

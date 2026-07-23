@@ -20,14 +20,14 @@ on:
         required: false
         default: '4096'
       enable_root:
-        description: 'Enable Root (Magisk)'
+        description: 'Enable Root (Magisk) — takes 10-15min extra boot time'
         required: false
-        default: true
+        default: false
         type: boolean
       enable_gapps:
-        description: 'Enable Google Apps (PICO)'
+        description: 'Enable Google Apps (PICO) — takes 10-15min extra boot time'
         required: false
-        default: true
+        default: false
         type: boolean
       enable_arm:
         description: 'Enable ARM Translation'

@@ -1,36 +1,44 @@
 ###############################################################################
-# Cloud Android Phone - Ultimate Production Dockerfile
-# Built on Alpine Android + ws-scrcpy + NPort
+# Cloud Android Phone v3.0 - Ultimate Production Dockerfile
+# Alpine 3.19 + Android Emulator + ws-scrcpy + NPort
 ###############################################################################
 
-FROM alpine:3.18 AS base
+FROM alpine:3.19
 
-# System Dependencies
+LABEL maintainer="Cloud Android Phone" version="3.0.0"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk \
+    PATH="/opt/android-sdk/platform-tools:/opt/android-sdk/emulator:${PATH}" \
+    DISPLAY_WIDTH=720 DISPLAY_HEIGHT=1280 RAM_SIZE=4096 \
+    SCRCPY_WEB_PORT=8000 ADB_PORT=5555 \
+    ARM_TRANSLATION=1 ROOT_SETUP=1 GAPPS_SETUP=1 SESSION_MAX_HOURS=6
+
+# ─── System Dependencies (Alpine correct package names) ───
 RUN apk update && apk add --no-cache \
-    bash curl wget jq gnupg2 gpg-agent \
+    bash curl wget jq gnupg gpg-agent \
     ca-certificates \
     qemu-system-x86_64 libvirt-daemon bridge-utils \
     openjdk11-jdk-headless \
     alsa-lib alsa-utils \
     supervisor tar gzip procps net-tools sudo unzip shadow \
-    xvfb x11-xserver-utils x11-utils
+    xvfb x11vnc xterm mesa-dri-gallium mesa-egl mesa-gbm mesa-osmesa \
+    nodejs npm git python3 make g++ linux-headers build-base \
+    openjdk11-jre-headless && \
+    rm -rf /var/cache/apk/*
 
-# Install Node.js 20
-RUN wget -qO- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash && \
-    . $HOME/.nvm/nvm.sh && \
-    nvm install 20 && \
-    npm install -g nport@latest
+# ─── Install NPort ───
+RUN npm install -g nport
 
-# Install Android SDK (Minimal)
-ENV ANDROID_HOME=/opt/android-sdk
-RUN mkdir -p ${ANDROID_HOME} && \
+# ─── Install Android SDK (Minimal) ───
+RUN mkdir -p ${ANDROID_HOME}/cmdline-tools && \
     cd /tmp && \
     wget -q "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -O cmdline-tools.zip && \
     unzip -q cmdline-tools.zip && \
-    mv cmdline-tools ${ANDROID_HOME}/cmdline-tools && \
+    mv cmdline-tools ${ANDROID_HOME}/cmdline-tools/latest && \
     rm cmdline-tools.zip
 
-# Accept Licenses and Install Minimal SDK
+# ─── Accept Licenses and Install SDK Components ───
 RUN yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 && \
     ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
     "platform-tools" \
@@ -38,7 +46,7 @@ RUN yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/
     "emulator" \
     "system-images;android-34;google_apis;x86_64" > /dev/null 2>&1
 
-# Create AVD
+# ─── Create AVD (Android Virtual Device) ───
 RUN ${ANDROID_HOME}/cmdline-tools/latest/bin/avdmanager create avd \
     --force \
     --name cloud_phone \
@@ -46,38 +54,45 @@ RUN ${ANDROID_HOME}/cmdline-tools/latest/bin/avdmanager create avd \
     --device "pixel_6" \
     --tag google_apis \
     --abi x86_64 && \
-    echo "hw.lcd.width=720" >> /root/.android/avd/cloud_phone.avd/config.ini && \
-    echo "hw.lcd.height=1280" >> /root/.android/avd/cloud_phone.avd/config.ini && \
-    echo "hw.lcd.density=320" >> /root/.android/avd/cloud_phone.avd/config.ini && \
-    echo "hw.ramSize=4096" >> /root/.android/avd/cloud_phone.avd/config.ini && \
-    echo "hw.gpu.enabled=yes" >> /root/.android/avd/cloud_phone.avd/config.ini && \
-    echo "hw.gpu.mode=host" >> /root/.android/avd/cloud_phone.avd/config.ini
+    cat >> /root/.android/avd/cloud_phone.avd/config.ini <<CONFIG
+hw.lcd.width=720
+hw.lcd.height=1280
+hw.lcd.density=320
+hw.ramSize=4096
+hw.gpu.enabled=yes
+hw.gpu.mode=host
+hw.camera.back=emulated
+hw.camera.front=emulated
+hw.audioInput=yes
+hw.audioOutput=yes
+CONFIG
 
-# User Setup
+# ─── Create Android User ───
 RUN adduser -D androidusr && \
     addgroup androidusr sudo && \
     echo "androidusr ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     mkdir -p /home/androidusr/{logs,backup,data} && \
     chown -R androidusr:androidusr /home/androidusr
 
-# ws-scrcpy (Server side)
-RUN apk add --no-cache git python3 make g++ build-base linux-headers && \
-    git clone --depth 1 https://github.com/NetrisTV/ws-scrcpy.git /opt/ws-scrcpy && \
+# ─── Install ws-scrcpy ───
+RUN git clone --depth 1 https://github.com/NetrisTV/ws-scrcpy.git /opt/ws-scrcpy && \
     cd /opt/ws-scrcpy && \
-    . $HOME/.nvm/nvm.sh && \
-    npm install && \
+    npm install --omit=dev && \
     npx tsc -b
 
-# Project Files
-COPY scripts/ /usr/local/bin/
+# ─── Copy Config and Scripts ───
 COPY config/ /etc/cloud-phone/
+COPY scripts/ /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/*.sh && \
     chown -R androidusr:androidusr /usr/local/bin /opt/ws-scrcpy /etc/cloud-phone /opt/android-sdk
 
+# ─── Expose Ports ───
 EXPOSE 8000 5555
 
+# ─── Health Check ───
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:8000 || exit 1
+    CMD curl -sf http://localhost:8000 || exit 1
 
+# ─── Start ───
 CMD ["supervisord", "-c", "/etc/cloud-phone/supervisord.conf", "-n"]

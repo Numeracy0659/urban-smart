@@ -1,10 +1,30 @@
-# Cloud Android Phone v3.0
+# Cloud Android Phone
 
 Full Android phone in your browser — on-demand, secure, ephemeral, zero cost.
 
 ## Architecture
 
-Uses **shmayro/dockerify-android** (Android 14 emulator with ARM translation, root, GAPPS) + **shmayro/scrcpy-web** (H.264 WebSocket streaming to browser) + **NPort** (instant HTTPS tunnel). All running on GitHub Actions free tier with KVM acceleration.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    GitHub Actions Runner                     │
+│  ┌──────────────────┐    ┌──────────────┐                   │
+│  │ dockerify-android │←→ │ scrcpy-web    │                   │
+│  │ (Android 14)      │    │ (H.264/WS)    │                   │
+│  │ + ARM Translation │    │ Port 8000     │                   │
+│  │ + Root + GAPPS    │    │               │                   │
+│  └──────────────────┘    └──────┬───────┘                   │
+│                                  │                          │
+│                          ┌───────▼───────┐                   │
+│                          │  bore.pub      │                   │
+│                          │  (Tunnel)      │                   │
+│                          └───────┬───────┘                   │
+└──────────────────────────────────┼──────────────────────────┘
+                                   │
+                            ┌──────▼──────┐
+                            │  Your Phone  │
+                            │  (Browser)   │
+                            └─────────────┘
+```
 
 ## Features
 
@@ -12,7 +32,7 @@ Uses **shmayro/dockerify-android** (Android 14 emulator with ARM translation, ro
 |---------|---------|
 | Android 14 (API 34) | Pixel 6 device profile |
 | Browser Streaming | scrcpy-web — H.264 over WebSocket, 60fps |
-| Public URL | NPort tunnel — instant `https://*.nport.link` |
+| Public URL | bore.pub tunnel — instant public URL |
 | Root Access | Magisk pre-installed (toggle) |
 | Google Apps | PICO GAPPS (toggle) |
 | ARM Translation | Run ARM apps on x86 (toggle) |
@@ -21,11 +41,11 @@ Uses **shmayro/dockerify-android** (Android 14 emulator with ARM translation, ro
 
 ## Quick Start
 
-1. Go to **Actions** tab
-2. Click **"Run workflow"** → **start**
+1. Go to **Actions** tab in your repository
+2. Click **"Run workflow"** → select **"start"**
 3. Configure options (root, GAPPS, resolution)
 4. Wait 10-15 minutes for boot
-5. Open the URL from the workflow logs
+5. Open the URL from the workflow logs or download the artifact
 
 ## Configuration Options
 
@@ -39,18 +59,36 @@ Uses **shmayro/dockerify-android** (Android 14 emulator with ARM translation, ro
 | `enable_arm` | true | ARM translation for ARM apps |
 | `session_hours` | 6 | Max session duration |
 
+## How It Works
+
+1. **Workflow triggers** — You manually start the workflow from GitHub Actions
+2. **KVM enabled** — Hardware acceleration for the Android emulator
+3. **Docker images pulled** — Pre-built Android and streaming images
+4. **Android boots** — Emulator initializes with your configured options
+5. **scrcpy-web starts** — H.264 WebSocket streaming on port 8000
+6. **Tunnel created** — bore.pub exposes port 8000 to the internet
+7. **Access your phone** — Open the URL in any browser
+8. **Session alive** — Workflow monitors for up to 6 hours
+9. **Auto cleanup** — When session ends, everything is destroyed
+
 ## Local Usage
 
 ```bash
+# Quick start
 chmod +x start.sh stop.sh
 ./start.sh
+
+# Stop
+./stop.sh
 ```
 
-## Credits
+## Technology Stack
 
-- [shmayro/dockerify-android](https://github.com/Shmayro/dockerify-android) — Android emulator
-- [shmayro/ws-scrcpy-docker](https://github.com/Shmayro/ws-scrcpy-docker) — Web streaming
-- [nport](https://github.com/tuanngocptn/nport) — HTTP tunneling
+- [shmayro/dockerify-android](https://github.com/Shmayro/dockerify-android) — Android emulator in Docker
+- [shmayro/scrcpy-web](https://github.com/Shmayro/ws-scrcpy-docker) — Browser streaming
+- [codetalkio/expose-tunnel](https://github.com/marketplace/actions/expose-tunnel) — bore.pub tunnel
+- [ekzhang/bore](https://github.com/ekzhang/bore) — Tunneling service
+- [ws-scrcpy](https://github.com/NetrisTV/ws-scrcpy) — WebSocket scrcpy client
 
 ## License
 

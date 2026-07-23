@@ -55,15 +55,15 @@ jobs:
 
       - name: Enable KVM
         run: |
-          if [ -e /dev/kvm ]; then
-            sudo chmod 666 /dev/kvm
-            ls -la /dev/kvm
-          fi
+          sudo chmod 666 /dev/kvm
+          echo "KVM enabled"
+          ls -la /dev/kvm
 
       - name: Pull Docker Images
         run: |
           docker pull shmayro/dockerify-android:latest
           docker pull shmayro/scrcpy-web:latest
+          echo "Docker images ready"
 
       - name: Start Android Emulator
         run: |
@@ -79,9 +79,11 @@ jobs:
             -e GAPPS_SETUP=$(echo "${{ github.event.inputs.enable_gapps }}" | tr '[:upper:]' '[:lower:]') \
             -e ARM_TRANSLATION=$(echo "${{ github.event.inputs.enable_arm }}" | tr '[:upper:]' '[:lower:]') \
             shmayro/dockerify-android:latest
+          echo "Android emulator starting..."
 
       - name: Start scrcpy-web
         run: |
+          echo "Waiting 30s for emulator to initialize..."
           sleep 30
           docker run -d \
             --name scrcpy-web \
@@ -90,8 +92,9 @@ jobs:
             --link dockerify-android \
             shmayro/scrcpy-web:latest sh -c \
             "adb connect dockerify-android:5555 && npm start"
+          echo "scrcpy-web container started on port 8000"
 
-      - name: Wait for Boot
+      - name: Wait for Android Boot
         run: |
           echo "Waiting for Android to boot..."
           for i in $(seq 1 300); do
@@ -100,18 +103,27 @@ jobs:
               echo "Android boot completed after $((i * 2))s"
               break
             fi
-            [ $((i % 30)) -eq 0 ] && echo "  ... $((i * 2))s"
+            [ $((i % 30)) -eq 0 ] && echo "  ... booting ($((i * 2))s)"
             sleep 2
           done
+          if [ "${BOOT}" != "1" ]; then
+            echo "::error::Android failed to boot within 10 minutes"
+            exit 1
+          fi
 
-          # Optimize
+      - name: Optimize Android
+        run: |
+          echo "Disabling animations for smoother experience..."
           docker exec dockerify-android adb shell settings put global window_animation_scale 0 2>/dev/null || true
           docker exec dockerify-android adb shell settings put global transition_animation_scale 0 2>/dev/null || true
           docker exec dockerify-android adb shell settings put global animator_duration_scale 0 2>/dev/null || true
           docker exec dockerify-android adb shell settings put system screen_off_timeout 2147483647 2>/dev/null || true
+          docker exec dockerify-android adb shell settings put secure show_ime_with_hard_keyboard 1 2>/dev/null || true
+          echo "Optimizations applied"
 
       - name: Wait for scrcpy-web
         run: |
+          echo "Waiting for scrcpy-web to be ready..."
           for i in $(seq 1 120); do
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 2>/dev/null || echo "000")
             if [ "${HTTP_CODE}" != "000" ] && [ "${HTTP_CODE}" != "502" ] && [ "${HTTP_CODE}" != "503" ]; then
@@ -120,66 +132,76 @@ jobs:
             fi
             sleep 3
           done
-          echo "::warning::scrcpy-web may not be fully ready"
+          echo "::warning::scrcpy-web may not be fully ready, continuing anyway..."
 
-      - name: Start NPort Tunnel
-        id: tunnel
+      - name: Create Public Tunnel
+        id: expose
+        uses: codetalkio/expose-tunnel@v1.5.0
+        with:
+          service: bore.pub
+          port: 8000
+
+      - name: Print Access Information
         run: |
-          npm install -g nport
-          SUBDOMAIN="caphone-$(date +%s | sha256sum | head -c 6)"
-          
-          nohup nport 8000 -s "${SUBDOMAIN}" > /tmp/nport.log 2>&1 &
-          
-          for i in $(seq 1 30); do
-            sleep 3
-            if grep -q "nport.link" /tmp/nport.log 2>/dev/null; then
-              TUNNEL_URL=$(grep -oP 'https://[a-zA-Z0-9.-]+\.nport\.link' /tmp/nport.log | head -1)
-              if [ -n "${TUNNEL_URL}" ]; then
-                echo "url=${TUNNEL_URL}" >> "${GITHUB_OUTPUT}"
-                echo "tunnel_url=${TUNNEL_URL}"
-                exit 0
-              fi
-            fi
-          done
-          echo "url=http://localhost:8000" >> "${GITHUB_OUTPUT}"
-          echo "tunnel_url=http://localhost:8000"
+          echo ""
+          echo "=========================================="
+          echo "  CLOUD ANDROID PHONE IS READY!"
+          echo "=========================================="
+          echo ""
+          echo "  URL: ${{ steps.expose.outputs.tunnel-url }}"
+          echo "  Android: API 34 (Android 14)"
+          echo "  Resolution: ${{ github.event.inputs.resolution }}"
+          echo "  RAM: ${{ github.event.inputs.ram_mb }}MB"
+          echo "  Root: ${{ github.event.inputs.enable_root }}"
+          echo "  GAPPS: ${{ github.event.inputs.enable_gapps }}"
+          echo "  Session: ${{ github.event.inputs.session_hours }} hours max"
+          echo ""
+          echo "  Open the URL in your browser to use your phone!"
+          echo "=========================================="
 
-      - name: Save Access URL to Artifact
+      - name: Save Access URL as Artifact
         run: |
           mkdir -p /tmp/access-info
-          echo "TUNNEL_URL=${{ steps.tunnel.outputs.url }}" > /tmp/access-info/url.txt
-          echo "Android Version: API 34 (Android 14)" >> /tmp/access-info/url.txt
+          echo "${{ steps.expose.outputs.tunnel-url }}" > /tmp/access-info/url.txt
+          echo "" >> /tmp/access-info/url.txt
+          echo "Android: API 34 (Android 14)" >> /tmp/access-info/url.txt
           echo "Resolution: ${{ github.event.inputs.resolution }}" >> /tmp/access-info/url.txt
           echo "RAM: ${{ github.event.inputs.ram_mb }}MB" >> /tmp/access-info/url.txt
-          echo "Session: ${{ github.event.inputs.session_hours }} hours max" >> /tmp/access-info/url.txt
+          echo "Root: ${{ github.event.inputs.enable_root }}" >> /tmp/access-info/url.txt
+          echo "GAPPS: ${{ github.event.inputs.enable_gapps }}" >> /tmp/access-info/url.txt
+          echo "Session: ${{ github.event.inputs.session_hours }}h max" >> /tmp/access-info/url.txt
           echo "" >> /tmp/access-info/url.txt
-          echo "Open the URL in your browser to access your Cloud Android Phone!" >> /tmp/access-info/url.txt
-          echo "${{ steps.tunnel.outputs.url }}" >> /tmp/access-info/only-url.txt
+          echo "Open the URL above in your browser to use your Cloud Android Phone!" >> /tmp/access-info/url.txt
           cat /tmp/access-info/url.txt
 
-      - name: Upload Access URL as Artifact
+      - name: Upload Access URL Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: phone-access-url
+          name: cloud-phone-access-url
           path: /tmp/access-info/
+          retention-days: 1
 
-      - name: Keep Alive & Monitor
+      - name: Keep Session Alive
         run: |
           MAX_SECONDS=$((${{ github.event.inputs.session_hours }} * 3600))
           START_TIME=$(date +%s)
-          echo "Session started. Max duration: ${{ github.event.inputs.session_hours }}h"
+          echo "Session active. Max duration: ${{ github.event.inputs.session_hours }}h"
+          echo "Your phone is accessible at: ${{ steps.expose.outputs.tunnel-url }}"
+          echo ""
           while true; do
             ELAPSED=$(($(date +%s) - START_TIME))
             REMAINING=$((MAX_SECONDS - ELAPSED))
             if [ "${REMAINING}" -le 0 ]; then
-              echo "TIME LIMIT REACHED"
+              echo "TIME LIMIT REACHED (${MAX_SECONDS}s). Session ended."
               exit 0
             fi
             BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             HOURS=$((REMAINING / 3600))
             MINUTES=$(((REMAINING % 3600) / 60))
-            echo "[$(date -u)] boot=${BOOT} remaining=${HOURS}h ${MINUTES}m"
-            sleep 300
+            if [ $((ELAPSED % 600)) -eq 0 ]; then
+              echo "[$(date -u)] Status: boot=${BOOT} | remaining=${HOURS}h ${MINUTES}m"
+            fi
+            sleep 60
           done
 
   stop-phone:
@@ -187,9 +209,10 @@ jobs:
     if: github.event.inputs.action == 'stop'
     runs-on: ubuntu-latest
     steps:
-      - name: Stop Containers
+      - name: Stop All Services
         run: |
+          echo "Stopping cloud phone..."
           docker stop scrcpy-web 2>/dev/null && docker rm scrcpy-web 2>/dev/null || true
           docker stop dockerify-android 2>/dev/null && docker rm dockerify-android 2>/dev/null || true
-          pkill -f "nport" 2>/dev/null || true
-          echo "Stopped"
+          docker system prune -f 2>/dev/null || true
+          echo "All services stopped and cleaned up."

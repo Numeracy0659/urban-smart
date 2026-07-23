@@ -1,23 +1,23 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "Cloud Android Phone v3.0"
-echo "=========================="
+echo "Cloud Android Phone"
+echo "===================="
 
 if ! command -v docker &>/dev/null; then
-    echo "ERROR: Docker required"
+    echo "ERROR: Docker is required. Install it first."
     exit 1
 fi
 
 [ -e /dev/kvm ] && sudo chmod 666 /dev/kvm 2>/dev/null || true
 
 # Pull images
-echo "Pulling images..."
+echo "[1/5] Pulling Docker images..."
 docker pull shmayro/dockerify-android:latest
 docker pull shmayro/scrcpy-web:latest
 
 # Start Android emulator
-echo "Starting Android emulator..."
+echo "[2/5] Starting Android emulator..."
 docker run -d \
     --name dockerify-android \
     --privileged \
@@ -32,7 +32,7 @@ docker run -d \
     shmayro/dockerify-android:latest
 
 # Start scrcpy-web
-echo "Starting web interface..."
+echo "[3/5] Starting web interface (scrcpy-web)..."
 sleep 10
 docker run -d \
     --name scrcpy-web \
@@ -43,34 +43,42 @@ docker run -d \
     "adb connect dockerify-android:5555 && npm start"
 
 # Wait for boot
-echo "Waiting for Android to boot (10-15 min on first run)..."
+echo "[4/5] Waiting for Android to boot..."
 for i in $(seq 1 450); do
     BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
     if [ "${BOOT}" = "1" ]; then
         echo "Android boot completed after $((i * 2))s"
         break
     fi
-    [ $((i % 30)) -eq 0 ] && echo "  ... $((i * 2))s"
+    [ $((i % 30)) -eq 0 ] && echo "  ... booting ($((i * 2))s)"
     sleep 2
 done
 
-# Start NPort
-echo "Starting tunnel..."
-npm install -g nport 2>/dev/null || true
-SUB="caphone-$(date +%s | sha256sum | head -c 6)"
-nohup nport 8000 -s "${SUB}" > /tmp/nport-cp.log 2>&1 &
+# Apply optimizations
+docker exec dockerify-android adb shell settings put global window_animation_scale 0 2>/dev/null || true
+docker exec dockerify-android adb shell settings put global transition_animation_scale 0 2>/dev/null || true
+docker exec dockerify-android adb shell settings put global animator_duration_scale 0 2>/dev/null || true
+docker exec dockerify-android adb shell settings put system screen_off_timeout 2147483647 2>/dev/null || true
 
-for i in $(seq 1 30); do
-    sleep 3
-    if grep -q "nport.link" /tmp/nport-cp.log 2>/dev/null; then
-        TUNNEL_URL=$(grep -oP 'https://[a-zA-Z0-9.-]+\.nport\.link' /tmp/nport-cp.log | head -1)
-        [ -n "${TUNNEL_URL}" ] && break
-    fi
-done
+# Start tunnel
+echo "[5/5] Creating public tunnel..."
+npm install -g localtunnel 2>/dev/null || npm install -g localtunnel --force 2>/dev/null || true
+
+if command -v lt &>/dev/null; then
+    TUNNEL_URL=$(lt --port 8000 2>/dev/null | grep -oP 'https://[^ ]+' | head -1)
+fi
+
 TUNNEL_URL="${TUNNEL_URL:-http://localhost:8000}"
 
 echo ""
 echo "=========================================="
-echo "  READY! URL: ${TUNNEL_URL}"
+echo "  CLOUD ANDROID PHONE IS READY!"
 echo "=========================================="
-echo "Stop: ./stop.sh"
+echo ""
+echo "  URL: ${TUNNEL_URL}"
+echo "  Local: http://localhost:8000"
+echo "  Android: API 34 (Android 14)"
+echo ""
+echo "  Open the URL in your browser to use your phone!"
+echo "  Stop: ./stop.sh"
+echo "=========================================="

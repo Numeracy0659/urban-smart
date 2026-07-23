@@ -1,0 +1,121 @@
+variables:
+  CONTAINER_NAME: dockerify-android
+  SCRCPY_CONTAINER: scrcpy-web
+  SCRCPY_PORT: 8000
+  SESSION_HOURS: 6
+
+stages:
+  - build
+  - start
+  - access
+  - monitor
+  - cleanup
+
+build:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  script:
+    - docker pull shmayro/dockerify-android:latest
+    - docker pull shmayro/scrcpy-web:latest
+    - echo "Images ready"
+  timeout: 15m
+
+start:
+  stage: start
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  script:
+    - |
+      docker run -d \
+        --name dockerify-android \
+        --privileged \
+        --device /dev/kvm \
+        -p 5555:5555 \
+        -e DNS=one.one.one.one \
+        -e RAM_SIZE=4096 \
+        -e SCREEN_RESOLUTION=720x1280 \
+        -e ROOT_SETUP=1 \
+        -e GAPPS_SETUP=1 \
+        -e ARM_TRANSLATION=1 \
+        shmayro/dockerify-android:latest
+      
+      sleep 30
+      
+      docker run -d \
+        --name scrcpy-web \
+        --privileged \
+        -p 8000:8000 \
+        --link dockerify-android \
+        shmayro/scrcpy-web:latest sh -c \
+        "adb connect dockerify-android:5555 && npm start"
+      
+      # Wait for boot
+      for i in $(seq 1 300); do
+        BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
+        [ "${BOOT}" = "1" ] && break
+        sleep 2
+      done
+      
+      # Optimize
+      docker exec dockerify-android adb shell settings put global window_animation_scale 0 2>/dev/null || true
+      docker exec dockerify-android adb shell settings put global transition_animation_scale 0 2>/dev/null || true
+      docker exec dockerify-android adb shell settings put global animator_duration_scale 0 2>/dev/null || true
+      docker exec dockerify-android adb shell settings put system screen_off_timeout 2147483647 2>/dev/null || true
+      
+      echo "Android ready"
+  timeout: 20m
+
+access:
+  stage: access
+  image: node:20-alpine
+  script:
+    - npm install -g localtunnel
+    - lt --port 8000 &
+    - sleep 5
+    - TUNNEL_URL=$(lt --port 8000 2>/dev/null | grep -oP 'https://[^ ]+' | head -1)
+    - echo "CLOUD_PHONE_URL=${TUNNEL_URL:-http://localhost:8000}" >> access_url.env
+    - cat access_url.env
+  artifacts:
+    paths:
+      - access_url.env
+  timeout: 5m
+
+monitor-phone:
+  stage: monitor
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  script:
+    - |
+      START_TIME=$(date +%s)
+      MAX_SECONDS=$((${SESSION_HOURS} * 3600))
+      while true; do
+        ELAPSED=$(($(date +%s) - START_TIME))
+        REMAINING=$((MAX_SECONDS - ELAPSED))
+        if [ "${REMAINING}" -le 0 ]; then
+          echo "TIME LIMIT REACHED"
+          exit 0
+        fi
+        BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
+        HOURS=$((REMAINING / 3600))
+        MINUTES=$(((REMAINING % 3600) / 60))
+        echo "[$(date -u)] boot=${BOOT} remaining=${HOURS}h ${MINUTES}m"
+        sleep 300
+      done
+  timeout: 6h
+
+cleanup:
+  stage: cleanup
+  when: always
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  script:
+    - docker stop scrcpy-web 2>/dev/null && docker rm scrcpy-web 2>/dev/null || true
+    - docker stop dockerify-android 2>/dev/null && docker rm dockerify-android 2>/dev/null || true
+    - pkill -f "lt --port" 2>/dev/null || true
+    - docker system prune -f 2>/dev/null || true
+    - echo "Cleaned up"

@@ -1,330 +1,410 @@
 ###############################################################################
-#  Cloud Android Phone v3.0 — Production Build
-#  Uses ReactiveCircus android-emulator-runner for reliable KVM acceleration
-#  Apps: Termux, F-Droid, Firefox, Kiwi, ScreenStream + Frida + Tools
+#  Cloud Android Phone v4.0 — Production Grade
+#  Architecture: ReactiveCircus + ws-scrcpy + bore.pub tunnel
+#  No Docker. Direct KVM on GitHub Actions runner.
 ###############################################################################
-name: Cloud Android Phone v3
+name: Cloud Android Phone v4
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Action: start or stop the cloud phone'
+        description: 'Action: start or stop'
         required: true
         default: 'start'
         type: choice
         options:
           - start
           - stop
-      resolution:
-        description: 'Screen Resolution (WxH)'
-        required: false
-        default: '1080x2400'
-      ram_mb:
-        description: 'RAM in MB'
-        required: false
-        default: '4096'
-      api_level:
-        description: 'Android API Level'
-        required: false
-        default: '34'
       session_hours:
-        description: 'Max Session Duration (hours)'
+        description: 'Session duration (hours, 1-8)'
         required: false
-        default: '6'
+        default: '4'
 
 permissions:
   contents: read
+  actions: read
 
+###############################################################################
+# JOB 1: START CLOUD PHONE
+###############################################################################
 jobs:
-  setup-and-run:
+  start-phone:
     name: Start Cloud Phone
     if: github.event.inputs.action == 'start'
     runs-on: ubuntu-latest
-    timeout-minutes: 480
+    timeout-minutes: 540  # 9 hours max
 
     steps:
-      # ─────────────────────────────────────────────────────────────────────
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      # ─────────────────────────────────────────────────────────────────────
+      # ── Step 1: Enable KVM ──────────────────────────────────────────────
       - name: Enable KVM Hardware Acceleration
         run: |
-          echo "=== Enabling KVM ==="
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           ls -la /dev/kvm
-          echo "✅ KVM enabled"
+          groups
+          echo "KVM enabled successfully"
 
-      # ─────────────────────────────────────────────────────────────────────
-      - name: Install ADB & Platform Tools
+      # ── Step 2: Install Node.js for ws-scrcpy ───────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── Step 3: Install ws-scrcpy (web-based screen sharing) ────────────
+      - name: Install ws-scrcpy
         run: |
-          echo "=== Installing Android SDK Platform Tools ==="
+          echo "=== Installing ws-scrcpy ==="
           sudo apt-get update -qq
-          sudo apt-get install -y -qq android-tools-adb android-tools-fastboot
-          adb version
-          echo "✅ ADB installed"
+          sudo apt-get install -y -qq build-essential python3
+          git clone --depth 1 https://github.com/NetrisTV/ws-scrcpy.git /tmp/ws-scrcpy
+          cd /tmp/ws-scrcpy
+          npm install --ignore-scripts 2>&1 | tail -5
+          # Install node-gyp deps and rebuild native modules
+          npm rebuild 2>&1 | tail -5 || true
+          echo "✅ ws-scrcpy installed"
 
-      # ─────────────────────────────────────────────────────────────────────
-      - name: Start Android Emulator & Setup
+      # ── Step 4: Download bore tunnel client ─────────────────────────────
+      - name: Download bore.pub Tunnel Client
+        run: |
+          echo "=== Downloading bore ==="
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz \
+            | tar xz -C /tmp/
+          chmod +x /tmp/bore
+          /tmp/bore --help | head -3
+          echo "✅ bore downloaded"
+
+      # ── Step 5: Boot Android Emulator ───────────────────────────────────
+      - name: Boot Android Emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: ${{ github.event.inputs.api_level }}
+          api-level: 34
           arch: x86_64
           profile: pixel_6_pro
-          ram-size: ${{ github.event.inputs.ram_mb }}M
-          disk-size: 4G
+          ram-size: 4096M
+          disk-size: 6G
           heap-size: 512M
-          force-avd-creation: false
-          emulator-options: -no-snapshot-save -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          force-avd-creation: true
+          emulator-options: -no-snapshot-save -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -screen touch
           disable-animations: true
           boot-timeout: 900
+          avd-name: CloudPhone
           script: |
+            #!/bin/bash
+            set -euo pipefail
+
             echo "╔══════════════════════════════════════════════════════════╗"
-            echo "║     CLOUD ANDROID PHONE v3.0 — SETUP IN PROGRESS       ║"
+            echo "║  CLOUD ANDROID PHONE v4.0 — SETUP                      ║"
             echo "╚══════════════════════════════════════════════════════════╝"
+            echo ""
 
-            ADB="adb shell"
-            ADBP="adb push"
-
-            # ── System Info & Root ───────────────────────────────────────
-            echo "=== System Information ==="
-            $ADB "getprop ro.build.version.release"
-            $ADB "getprop ro.build.version.sdk"
-            $ADB "getprop ro.product.cpu.abilist"
+            # ── System Verification ───────────────────────────────────────
+            echo "=== System Info ==="
+            ANDROID_VERSION=$(adb shell getprop ro.build.version.release)
+            SDK_LEVEL=$(adb shell getprop ro.build.version.sdk)
+            ABI_LIST=$(adb shell getprop ro.product.cpu.abilist)
+            echo "Android: ${ANDROID_VERSION} (API ${SDK_LEVEL})"
+            echo "ABIs: ${ABI_LIST}"
             echo ""
 
             echo "=== Memory ==="
-            $ADB "cat /proc/meminfo | head -5"
+            adb shell cat /proc/meminfo | head -3
             echo ""
 
             echo "=== Disk ==="
-            $ADB "df -h /data"
+            adb shell df -h /data
             echo ""
 
-            # ── Root Verification ───────────────────────────────────────
-            echo "=== Root Check ==="
-            $ADB "cat /proc/self/status | grep Uid"
-            $ADB "ls -la /system/xbin/su 2>/dev/null || ls -la /system/bin/su 2>/dev/null || echo 'su not found in standard paths'"
-            $ADB "ls -la /system/xbin/magisk 2>/dev/null || ls -la /data/adb/magisk/magisk 2>/dev/null || echo 'Magisk check done'"
+            # ── Root Check ───────────────────────────────────────────────
+            echo "=== Root Status ==="
+            adb shell cat /proc/self/status | grep Uid || true
+            # Check if su exists
+            adb shell "ls /system/xbin/su /system/bin/su /su/bin/su 2>/dev/null || echo 'su binary not present'" || true
+            adb shell "which magisk 2>/dev/null || echo 'Magisk not found (expected for standard AVD)'" || true
+            echo "Note: Standard AVD provides root via adb shell. For full su/Magisk, a rooted image is needed."
             echo ""
 
-            # ── Performance Optimizations ────────────────────────────────
+            # ── Performance Optimizations ─────────────────────────────────
             echo "=== Performance Optimizations ==="
-            $ADB "settings put global window_animation_scale 0"
-            $ADB "settings put global transition_animation_scale 0"
-            $ADB "settings put global animator_duration_scale 0"
-            $ADB "settings put system screen_off_timeout 2147483647"
-            $ADB "settings put secure show_ime_with_hard_keyboard 1"
-            $ADB "settings put global development_settings_enabled 1"
-            $ADB "settings put secure install_non_market_apps 1"
+            adb shell settings put global window_animation_scale 0
+            adb shell settings put global transition_animation_scale 0
+            adb shell settings put global animator_duration_scale 0
+            adb shell settings put system screen_off_timeout 2147483647
+            adb shell settings put secure show_ime_with_hard_keyboard 1
+            adb shell settings put global development_settings_enabled 1
+            adb shell settings put global enabled_verify_apps 0
             echo "✅ Optimizations applied"
             echo ""
 
-            # ── Enable screen sharing permissions ────────────────────────
-            echo "=== Enable Screen Sharing ==="
-            $ADB "settings put secure enabled_accessibility_services com.github.dkrivoruchko.screenstream/.ScreenRecordingService" 2>/dev/null || true
-            $ADB "settings put secure accessibility_enabled 1" 2>/dev/null || true
-            echo "✅ Screen sharing prepared"
+            # ── Dynamic APK URL Resolution ────────────────────────────────
+            echo "=== Resolving Latest APK Versions ==="
+            cd /tmp
+
+            # Termux (use API to get latest stable)
+            TERMUX_URL=$(curl -sL "https://api.github.com/repos/termux/termux-app/releases" \
+              | python3 -c "import json,sys; r=json.load(sys.stdin); 
+              assets=[a for a in r[0]['assets'] if 'x86_64' in a['name'] and '.apk' in a['name']];
+              print(assets[0]['browser_download_url'] if assets else '')")
+            echo "  Termux: ${TERMUX_URL}"
+
+            # F-Droid
+            FDROID_URL="https://f-droid.org/F-Droid.apk"
+            echo "  F-Droid: ${FDROID_URL}"
+
+            # ScreenStream (check latest release)
+            SCREENSTREAM_URL=$(curl -sL "https://api.github.com/repos/dkrivoruchko/ScreenStream/releases/latest" \
+              | python3 -c "import json,sys; r=json.load(sys.stdin);
+              assets=[a for a in r.get('assets',[]) if 'PlayStore' in a['name']];
+              print(assets[0]['browser_download_url'] if assets else r.get('assets',[])[0]['browser_download_url'] if r.get('assets') else '')")
+            echo "  ScreenStream: ${SCREENSTREAM_URL}"
+
+            # Firefox (use x86_64 for performance)
+            FIREFOX_URL=$(curl -sL "https://api.github.com/repos/mozilla-mobile/fenix/releases/latest" \
+              | python3 -c "import json,sys; r=json.load(sys.stdin);
+              assets=[a for a in r.get('assets',[]) if 'x86_64' in a['name'] and '.apk' in a['name']];
+              print(assets[0]['browser_download_url'] if assets else '')")
+            echo "  Firefox: ${FIREFOX_URL}"
+
+            # Kiwi Browser (use latest from src.next)
+            KIWI_URL=$(curl -sL "https://api.github.com/repos/kiwibrowser/src.next/releases" \
+              | python3 -c "import json,sys; releases=json.load(sys.stdin);
+              for r in releases:
+                  assets=[a for a in r.get('assets',[]) if a['name'].startswith('com.kiwibrowser.browser-x86') and '.apk' in a['name'] and '.dev' not in a['name']];
+                  if assets: print(assets[0]['browser_download_url']); break")
+            echo "  Kiwi: ${KIWI_URL}"
+
             echo ""
 
-            # ── Install Frida Server ─────────────────────────────────────
-            echo "=== Installing Frida Server v17.16.4 ==="
-            FRIDA_URL="https://github.com/frida/frida/releases/download/17.16.4/frida-server-17.16.4-android-x86_64.xz"
-            curl -L -o /tmp/frida-server.xz "${FRIDA_URL}" 2>&1
+            # ── Download APKs ─────────────────────────────────────────────
+            echo "=== Downloading APKs ==="
 
+            curl -L -o /tmp/termux.apk "${TERMUX_URL}" 2>&1 | tail -1
+            curl -L -o /tmp/termux-boot.apk "https://github.com/termux/termux-boot/releases/download/v0.8.1/termux-boot-app_v0.8.1%2Bgithub.debug.apk" 2>&1 | tail -1
+            curl -L -o /tmp/termux-api.apk "https://github.com/termux/termux-api/releases/download/v0.53.0/termux-api-app_v0.53.0%2Bgithub.debug.apk" 2>&1 | tail -1
+            curl -L -o /tmp/fdroid.apk "${FDROID_URL}" 2>&1 | tail -1
+            curl -L -o /tmp/screenstream.apk "${SCREENSTREAM_URL}" 2>&1 | tail -1
+            curl -L -o /tmp/firefox.apk "${FIREFOX_URL}" 2>&1 | tail -1
+            curl -L -o /tmp/kiwi.apk "${KIWI_URL}" 2>&1 | tail -1
+
+            echo ""
+            echo "=== APK Download Summary ==="
+            for f in /tmp/*.apk; do
+              if [ -f "$f" ] && [ $(stat -c%s "$f" 2>/dev/null || echo 0) -gt 100000 ]; then
+                echo "  ✅ $(basename $f): $(du -h $f | cut -f1)"
+              else
+                echo "  ❌ $(basename $f): FAILED"
+              fi
+            done
+            echo ""
+
+            # ── Install APKs ──────────────────────────────────────────────
+            echo "=== Installing APKs ==="
+            for apk in termux termux-boot termux-api fdroid screenstream firefox kiwi; do
+              apk_path="/tmp/${apk}.apk"
+              if [ -f "${apk_path}" ] && [ $(stat -c%s "${apk_path}" 2>/dev/null || echo 0) -gt 100000 ]; then
+                echo "  Installing ${apk}..."
+                adb install -r "${apk_path}" 2>&1 | tail -1
+              else
+                echo "  ❌ ${apk}: file not valid"
+              fi
+            done
+            echo ""
+            echo "=== Verify Installed ==="
+            adb shell pm list packages 2>/dev/null | grep -iE 'termux|fdroid|screenstream|firefox|kiwi' || true
+            echo ""
+
+            # ── Configure Permissions ─────────────────────────────────────
+            echo "=== Configuring Permissions ==="
+            adb shell appops set com.github.dkrivoruchko.screenstream SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+            adb shell pm grant com.github.dkrivoruchko.screenstream android.permission.CAMERA 2>/dev/null || true
+            adb shell pm grant com.github.dkrivoruchko.screenstream android.permission.RECORD_AUDIO 2>/dev/null || true
+            adb shell pm grant com.github.dkrivoruchko.screenstream android.permission.FOREGROUND_SERVICE 2>/dev/null || true
+            adb shell dumpsys deviceidle whitelist +com.termux 2>/dev/null || true
+            adb shell dumpsys deviceidle whitelist +com.termux.api 2>/dev/null || true
+            adb shell dumpsys deviceidle whitelist +com.github.dkrivoruchko.screenstream 2>/dev/null || true
+            echo "✅ Permissions configured"
+            echo ""
+
+            # ── Install Frida Server ──────────────────────────────────────
+            echo "=== Installing Frida Server ==="
+            FRIDA_VERSION="17.16.4"
+            curl -L -o /tmp/frida-server.xz \
+              "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz" 2>&1 | tail -1
+            
             FRIDA_SIZE=$(stat -c%s /tmp/frida-server.xz 2>/dev/null || echo 0)
-            echo "Downloaded: ${FRIDA_SIZE} bytes"
-
             if [ "${FRIDA_SIZE}" -gt 100000 ]; then
               xz -d /tmp/frida-server.xz -c > /tmp/frida-server
-              chmod +x /tmp/frida-server
-              echo "✅ Frida binary ready"
-
+              chmod 755 /tmp/frida-server
               adb push /tmp/frida-server /data/local/tmp/frida-server
-              adb shell "chmod 755 /data/local/tmp/frida-server"
-
-              # Start frida-server
+              adb shell chmod 755 /data/local/tmp/frida-server
               adb shell "nohup /data/local/tmp/frida-server -l 0.0.0.0 > /dev/null 2>&1 &"
               sleep 3
-
-              # Verify
-              F_PID=$(adb shell "pidof frida-server" 2>/dev/null)
-              if [ -n "${F_PID}" ]; then
-                echo "✅ Frida server RUNNING (PID: ${F_PID})"
-              else
-                echo "⚠️ Checking frida process..."
-                adb shell "ps -A | grep frida" || true
-              fi
+              adb shell pidof frida-server && echo "✅ Frida server RUNNING" || echo "⚠️ Frida not running yet"
             else
-              echo "::warning::Frida download failed"
+              echo "::warning::Frida download failed (size: ${FRIDA_SIZE})"
             fi
             echo ""
 
-            # ── Download APKs ───────────────────────────────────────────
-            echo "=== Downloading APKs ==="
-
-            # Termux
-            echo "  Downloading Termux v0.118.3..."
-            curl -L -o /tmp/termux.apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3%2Bgithub-debug_x86_64.apk" 2>&1
-
-            # Termux:Boot
-            curl -L -o /tmp/termux-boot.apk "https://github.com/termux/termux-boot/releases/download/v0.8.1/termux-boot-app_v0.8.1%2Bgithub.debug.apk" 2>&1
-
-            # Termux:API
-            curl -L -o /tmp/termux-api.apk "https://github.com/termux/termux-api/releases/download/v0.53.0/termux-api-app_v0.53.0%2Bgithub.debug.apk" 2>&1
-
-            # F-Droid
-            echo "  Downloading F-Droid v1.18.0..."
-            curl -L -o /tmp/fdroid.apk "https://github.com/f-droid/fdroidclient/releases/download/1.18.0/org.fdroid.fdroid_1018050.apk" 2>&1
-
-            # ScreenStream
-            echo "  Downloading ScreenStream v4.4.2..."
-            curl -L -o /tmp/screenstream.apk "https://github.com/dkrivoruchko/ScreenStream/releases/download/4.4.2/ScreenStream-PlayStore-44002.apk" 2>&1
-
-            # Firefox
-            echo "  Downloading Firefox v110..."
-            curl -L -o /tmp/firefox.apk "https://github.com/mozilla-mobile/fenix/releases/download/v110.0.1/fenix-110.0.1-x86.apk" 2>&1
-
-            # Kiwi Browser
-            echo "  Downloading Kiwi Browser..."
-            curl -L -o /tmp/kiwi.apk "https://github.com/kiwibrowser/src.next/releases/download/14310011181/com.kiwibrowser.browser-x86-14310011181-github.apk" 2>&1
-
-            echo "✅ All APKs downloaded"
-            ls -lh /tmp/*.apk
+            # ── Start ws-scrcpy Web Server ────────────────────────────────
+            echo "=== Starting ws-scrcpy Web Interface ==="
+            
+            # Install frida-server.jar for scrcpy (modified version with WebSocket)
+            cd /tmp/ws-scrcpy
+            npm start &
+            SCRCPY_PID=$!
+            echo "ws-scrcpy PID: ${SCRCPY_PID}"
+            sleep 5
+            
+            # Check if it's running
+            if curl -s http://localhost:8000 > /dev/null 2>&1; then
+              echo "✅ ws-scrcpy running on port 8000"
+            else
+              echo "⚠️ ws-scrcpy may still be starting..."
+            fi
             echo ""
 
-            # ── Install APKs ────────────────────────────────────────────
-            echo "=== Installing APKs ==="
-
-            for apk in termux termux-boot termux-api fdroid screenstream firefox kiwi; do
-              apk_path="/tmp/${apk}.apk"
-              size=$(stat -c%s "${apk_path}" 2>/dev/null || echo 0)
-              if [ "${size}" -gt 100000 ]; then
-                echo "  Installing ${apk}..."
-                adb install -r "${apk_path}" 2>&1
-                echo "  ✅ ${apk} installed"
-              else
-                echo "  ⚠️ ${apk}: download failed (size: ${size})"
-              fi
-            done
-
-            echo ""
-            echo "=== Installed Packages ==="
-            adb shell "pm list packages | grep -iE 'termux|fdroid|screenstream|firefox|kiwi'"
-            echo ""
-
-            # ── Configure Permissions ────────────────────────────────────
-            echo "=== Configuring Permissions ==="
-            adb shell "appops set com.github.dkrivoruchko.screenstream SYSTEM_ALERT_WINDOW allow" 2>/dev/null || true
-            adb shell "pm grant com.github.dkrivoruchko.screenstream android.permission.CAMERA" 2>/dev/null || true
-            adb shell "pm grant com.github.dkrivoruchko.screenstream android.permission.RECORD_AUDIO" 2>/dev/null || true
-            adb shell "dumpsys deviceidle whitelist +com.termux" 2>/dev/null || true
-            echo "✅ Permissions configured"
-
-            # Launch Termux
-            adb shell "am start -n com.termux/.activity.TermuxActivity" 2>/dev/null || true
-            echo "✅ Termux launched"
+            # ── Start bore.pub Tunnel ─────────────────────────────────────
+            echo "=== Starting bore.pub Tunnel ==="
+            
+            # Start bore tunnel in background
+            /tmp/bore local 8000 --to bore.pub > /tmp/bore.log 2>&1 &
+            BORE_PID=$!
+            echo "bore PID: ${BORE_PID}"
+            sleep 8
+            
+            # Extract the tunnel URL
+            TUNNEL_URL=""
+            if grep -q "listening at" /tmp/bore.log 2>/dev/null; then
+              TUNNEL_URL=$(grep -oP 'bore\.pub:\d+' /tmp/bore.log | head -1)
+            fi
+            
+            if [ -n "${TUNNEL_URL}" ]; then
+              echo "✅ Tunnel URL: http://${TUNNEL_URL}"
+              echo "http://${TUNNEL_URL}" > /tmp/tunnel_url.txt
+            else
+              echo "bore log content:"
+              cat /tmp/bore.log
+              echo "⚠️ Tunnel may need more time to establish"
+              echo "http://TUNNEL_PENDING" > /tmp/tunnel_url.txt
+            fi
             echo ""
 
-            # ── Install Termux Packages ──────────────────────────────────
-            echo "=== Installing Termux Packages ==="
+            # ── Launch ScreenStream ───────────────────────────────────────
+            echo "=== Launching ScreenStream ==="
+            adb shell am start -n com.github.dkrivoruchko.screenstream/.MainActivity 2>/dev/null || true
+            sleep 3
+            adb shell am start -n com.github.dkrivoruchko.screenstream/.web.WebStreamingService 2>/dev/null || true
+            echo "✅ ScreenStream launched"
+            echo ""
 
-            # Wait for Termux to initialize
+            # ── Launch Termux & Setup ─────────────────────────────────────
+            echo "=== Setting Up Termux ==="
+            adb shell am start -n com.termux/.activity.TermuxActivity 2>/dev/null || true
             sleep 15
 
-            # Create a setup script
-            cat > /tmp/setup_termux.sh << 'TERMUX_SCRIPT'
+            # Create Termux setup script
+            cat > /tmp/setup_termux.sh << 'TERMUX_EOF'
             #!/bin/bash
             export HOME=/data/data/com.termux/files/home
             export PREFIX=/data/data/com.termux/files/usr
+            export PATH=$PREFIX/bin:$PATH
 
-            echo "Updating repositories..."
-            apt update -y 2>&1 | tail -3
+            echo "=== Termux First-Run Setup ==="
 
-            echo "Installing development tools..."
+            # Update package lists
+            apt update -y 2>&1 | tail -5
+
+            echo "Installing core development tools..."
             apt install -y \
-              python3 python-pip \
+              python python-pip \
               nodejs \
-              git \
-              curl wget \
+              git curl wget \
               openssh \
               nano vim \
-              tmux \
-              htop \
-              gcc clang \
-              make \
-              cmake \
-              2>&1 | tail -3
+              tmux htop \
+              gcc clang make cmake \
+              2>&1 | tail -5
 
-            echo "Installing network tools..."
+            echo "Installing network & security tools..."
             apt install -y \
-              nmap \
-              tcpdump \
-              net-tools \
-              ncat \
-              proxychains-ng \
-              ipcalc \
-              whois \
-              dnsutils \
-              jq \
-              httpie \
-              neofetch \
-              tree \
-              2>&1 | tail -3
+              nmap tcpdump net-tools ncat \
+              proxychains-ng ipcalc \
+              whois dnsutils \
+              jq httpie \
+              neofetch tree \
+              openssl \
+              strace ltrace \
+              2>&1 | tail -5
 
-            echo "Installing pentesting tools..."
+            echo "Installing pentesting Python packages..."
             pip install \
               frida-tools \
               mitmproxy \
               sqlmap \
               scapy \
               paramiko \
-              pwntools \
               requests \
               beautifulsoup4 \
               lxml \
-              gobuster \
-              dirsearch \
-              sublist3r \
-              2>&1 | tail -3
+              2>&1 | tail -5
 
-            echo "Setting up boot scripts..."
+            echo "Configuring Termux..."
             mkdir -p ~/.termux/boot
-            cat > ~/.termux/boot/start-frida << EOF
-            #!/data/data/com.termux/files/usr/bin/sh
-            su -c nohup /data/local/tmp/frida-server -l 0.0.0.0 &
-            EOF
-            chmod +x ~/.termux/boot/start-frida
-
-            cat > ~/.termux/termux.properties << EOF
-            extra-keys = [['ESC','TAB','CTRL','ALT','-','/','|','BKSP'],['UP','LEFT','RIGHT','DOWN','HOME','END','PGUP','PGDN']]
+            cat > ~/.termux/termux.properties << 'PROP_EOF'
+            extra-keys = [['ESC','TAB','CTRL','ALT','/','|','-','BKSP'],['UP','LEFT','RIGHT','DOWN','HOME','END','PGUP','PGDN']]
             allow-external-apps=true
-            open-url-using-always=true
             use-fullscreen-workaround=true
-            EOF
+            PROP_EOF
 
-            echo "✅ Termux setup complete"
-            TERMUX_SCRIPT
+            echo "✅ Termux setup complete!"
+            echo "Available tools: python3, node, git, nmap, tcpdump, ncat, tmux, vim, htop"
+            echo "Python packages: frida-tools, mitmproxy, sqlmap, scapy, paramiko"
+            TERMUX_EOF
 
             adb push /tmp/setup_termux.sh /data/local/tmp/setup_termux.sh
-
-            # Run via run-as
-            adb shell "run-as com.termux files/usr/bin/bash -c 'chmod +x /data/local/tmp/setup_termux.sh && cp /data/local/tmp/setup_termux.sh /data/data/com.termux/files/home/setup_termux.sh && bash /data/data/com.termux/files/home/setup_termux.sh'" 2>&1
-            echo ""
-            echo "✅ Termux packages installation initiated"
+            adb shell "run-as com.termux sh -c 'cp /data/local/tmp/setup_termux.sh /data/data/com.termux/files/home/ && chmod +x /data/data/com.termux/files/home/setup_termux.sh && bash /data/data/com.termux/files/home/setup_termux.sh 2>&1 &'" || true
+            echo "✅ Termux setup initiated (running in background)"
             echo ""
 
-            # ── Verify Frida ─────────────────────────────────────────────
-            echo "=== Frida Verification ==="
-            adb shell "ls -la /data/local/tmp/frida-server"
-            adb shell "ps -A | grep frida" || true
-            adb forward tcp:27042 tcp:27042 2>/dev/null || true
-            echo "✅ Frida verified"
-            echo ""
-
+            # ── Session Info ──────────────────────────────────────────────
             echo "╔══════════════════════════════════════════════════════════╗"
-            echo "║       CLOUD ANDROID PHONE v3.0 — SETUP COMPLETE          ║"
+            echo "║  CLOUD ANDROID PHONE v4.0 — READY                       ║"
+            echo "╠══════════════════════════════════════════════════════════╣"
+            echo "║  Access: ${TUNNEL_URL:-Pending...}                  ║"
+            echo "║  ws-scrcpy: http://localhost:8000                       ║"
+            echo "║  Android: ${ANDROID_VERSION} (API ${SDK_LEVEL})                     ║"
+            echo "║  Frida: $([ -n \"$(adb shell pidof frida-server 2>/dev/null)\" ] && echo RUNNING || echo NOT RUNNING)                        ║"
             echo "╚══════════════════════════════════════════════════════════╝"
+
+            # ── Keep Session Alive ────────────────────────────────────────
+            echo ""
+            echo "=== Session Active — Keeping Phone Alive ==="
+            
+            SESSION_SECONDS=$((4 * 3600))  # 4 hours default
+            ELAPSED=0
+            while [ ${ELAPSED} -lt ${SESSION_SECONDS} ]; do
+              # Check emulator health every 5 minutes
+              if [ $((ELAPSED % 300)) -eq 0 ] && [ ${ELAPSED} -gt 0 ]; then
+                BOOT_STATUS=$(adb shell getprop sys.boot_completed 2>/dev/null || echo "0")
+                echo "[$(date -u)] Boot status: ${BOOT_STATUS}, Elapsed: $((ELAPSED / 60))min"
+                
+                # Restart bore tunnel if it died
+                if ! kill -0 ${BORE_PID} 2>/dev/null; then
+                  echo "[$(date -u)] Restarting bore tunnel..."
+                  /tmp/bore local 8000 --to bore.pub > /tmp/bore.log 2>&1 &
+                  BORE_PID=$!
+                fi
+                
+                # Restart frida if it died
+                if [ -z "$(adb shell pidof frida-server 2>/dev/null)" ]; then
+                  echo "[$(date -u)] Restarting frida-server..."
+                  adb shell "nohup /data/local/tmp/frida-server -l 0.0.0.0 > /dev/null 2>&1 &"
+                fi
+              fi
+              sleep 15
+              ELAPSED=$((ELAPSED + 15))
+            done
+            
+            echo "Session complete. Shutting down."

@@ -1,0 +1,168 @@
+name: ☁️ Cloud Android Phone
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action'
+        required: true
+        default: 'start'
+        type: choice
+        options:
+          - start
+          - stop
+      android_version:
+        description: 'Android Version (API Level)'
+        required: false
+        default: '34'
+        type: choice
+        options:
+          - '30'
+          - '33'
+          - '34'
+      resolution:
+        description: 'Screen Resolution'
+        required: false
+        default: '720x1280'
+      ram_mb:
+        description: 'RAM (MB)'
+        required: false
+        default: '4096'
+      enable_root:
+        description: 'Enable Root (Magisk)'
+        required: false
+        default: true
+        type: boolean
+      enable_gapps:
+        description: 'Enable Google Apps (PICO)'
+        required: false
+        default: true
+        type: boolean
+      session_hours:
+        description: 'Max Session Duration (hours)'
+        required: false
+        default: '6'
+
+permissions:
+  contents: read
+
+jobs:
+  start-phone:
+    name: 📱 Start Cloud Phone
+    if: github.event.inputs.action == 'start'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo "KVM: Available"
+            sudo chmod 666 /dev/kvm
+          else
+            echo "KVM: Not available (software rendering)"
+          fi
+
+      - name: Build Docker Image
+        run: |
+          docker build \
+            --build-arg DISPLAY_WIDTH=$(echo "${{ github.event.inputs.resolution }}" | cut -dx -f1) \
+            --build-arg DISPLAY_HEIGHT=$(echo "${{ github.event.inputs.resolution }}" | cut -dx -f2) \
+            --build-arg RAM_SIZE=${{ github.event.inputs.ram_mb }} \
+            -t cloud-android-phone:latest \
+            .
+
+      - name: Start Container
+        run: |
+          RES_W=$(echo "${{ github.event.inputs.resolution }}" | cut -dx -f1)
+          RES_H=$(echo "${{ github.event.inputs.resolution }}" | cut -dx -f2)
+          
+          docker run -d \
+            --name cloud-phone \
+            --privileged \
+            --device /dev/kvm:/dev/kvm \
+            -p 8000:8000 \
+            -p 5555:5555 \
+            -e DISPLAY_WIDTH="${RES_W}" \
+            -e DISPLAY_HEIGHT="${RES_H}" \
+            -e RAM_SIZE="${{ github.event.inputs.ram_mb }}" \
+            -e SCRCPY_WEB_PORT=8000 \
+            -e ARM_TRANSLATION=1 \
+            -e ROOT_SETUP=$(echo "${{ github.event.inputs.enable_root }}" | tr '[:upper:]' '[:lower:]') \
+            -e GAPPS_SETUP=$(echo "${{ github.event.inputs.enable_gapps }}" | tr '[:upper:]' '[:lower:]') \
+            -e SESSION_MAX_HOURS=${{ github.event.inputs.session_hours }} \
+            cloud-android-phone:latest
+
+      - name: Wait for Boot
+        run: |
+          for i in $(seq 1 300); do
+            BOOT=$(docker exec cloud-phone /opt/android-sdk/platform-tools/adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
+            if [ "${BOOT}" = "1" ]; then
+              echo "✓ Boot completed after $((i * 2))s"
+              exit 0
+            fi
+            [ $i -eq 90 ] && echo "  ... 3 min elapsed"
+            [ $i -eq 180 ] && echo "  ... 6 min elapsed"
+            [ $i -eq 270 ] && echo "  ... 9 min elapsed"
+            sleep 2
+          done
+          echo "✗ Boot timeout"
+          docker logs cloud-phone --tail 50
+          exit 1
+
+      - name: Optimize
+        run: |
+          docker exec cloud-phone /opt/android-sdk/platform-tools/adb -s emulator-5555 shell settings put global window_animation_scale 0
+          docker exec cloud-phone /opt/android-sdk/platform-tools/adb -s emulator-5555 shell settings put global transition_animation_scale 0
+          docker exec cloud-phone /opt/android-sdk/platform-tools/adb -s emulator-5555 shell settings put global animator_duration_scale 0
+          docker exec cloud-phone /opt/android-sdk/platform-tools/adb -s emulator-5555 shell settings put system screen_off_timeout 2147483647
+
+      - name: Start NPort Tunnel
+        id: tunnel
+        run: |
+          npm install -g nport 2>/dev/null || npm install -g --force nport
+          SUBDOMAIN="caphone-$(date +%s | sha256sum | head -c 6)"
+          nport 8000 -s "${SUBDOMAIN}" > /tmp/nport.log 2>&1 &
+          
+          for i in $(seq 1 30); do
+            sleep 3
+            if grep -q "nport.link" /tmp/nport.log 2>/dev/null; then
+              TUNNEL_URL=$(grep -oP 'https://[a-zA-Z0-9.-]+\.nport\.link' /tmp/nport.log | head -1)
+              echo "url=${TUNNEL_URL}" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          done
+          echo "url=http://localhost:8000" >> "${GITHUB_OUTPUT}"
+
+      - name: Print Access
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════════╗"
+          echo "║   🎉  YOUR CLOUD ANDROID PHONE IS READY!                        ║"
+          echo "╠══════════════════════════════════════════════════════════════════╣"
+          echo "║   🔗  URL:  ${{ steps.tunnel.outputs.url }}                      ║"
+          echo "║   📱  Android: API ${{ github.event.inputs.android_version }}     ║"
+          echo "║   🖥️   Resolution: ${{ github.event.inputs.resolution }}          ║"
+          echo "║   ⏱️   Duration: Up to ${{ github.event.inputs.session_hours }}h  ║"
+          echo "╚══════════════════════════════════════════════════════════════════╝"
+
+      - name: Keep Alive
+        run: |
+          while true; do
+            BOOT=$(docker exec cloud-phone /opt/android-sdk/platform-tools/adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
+            echo "[$(date -u)] Status: boot_completed=${BOOT}"
+            sleep 300
+          done
+
+  stop-phone:
+    name: 🛑 Stop Cloud Phone
+    if: github.event.inputs.action == 'stop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop
+        run: |
+          docker stop cloud-phone 2>/dev/null && docker rm cloud-phone 2>/dev/null || true
+          echo "✓ Stopped"

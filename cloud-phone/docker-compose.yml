@@ -1,0 +1,44 @@
+services:
+  cloud-phone:
+    container_name: cloud-android-phone
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cloud-android-phone:latest
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kvm:/dev/kvm
+    ports:
+      - "8000:8000"
+      - "5555:5555"
+    volumes:
+      - cloud-phone-data:/home/androidusr/data
+      - cloud-phone-backup:/home/androidusr/backup
+    environment:
+      - DISPLAY_WIDTH=720
+      - DISPLAY_HEIGHT=1280
+      - RAM_SIZE=4096
+      - SCRCPY_WEB_PORT=8000
+      - ADB_PORT=5555
+      - ARM_TRANSLATION=1
+      - ROOT_SETUP=1
+      - GAPPS_SETUP=1
+      - SESSION_MAX_HOURS=6
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '4'
+
+volumes:
+  cloud-phone-data:
+    driver: local
+  cloud-phone-backup:
+    driver: local

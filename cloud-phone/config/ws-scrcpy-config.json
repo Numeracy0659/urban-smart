@@ -1,0 +1,24 @@
+{
+  "serverPort": 8000,
+  "serverHost": "0.0.0.0",
+  "wsHost": "0.0.0.0",
+  "wsPort": 8001,
+  "adbPath": "/opt/android-sdk/platform-tools/adb",
+  "adbHost": "emulator-5555",
+  "adbPort": 5555,
+  "devices": {
+    "firstMatch": []
+  },
+  "codecOptions": {
+    "bitrate": 4000000,
+    "maxFps": 60,
+    "maxSize": 0
+  },
+  "streaming": {
+    "preferredEngine": "h264Converter",
+    "fallbackEngine": "broadway.js"
+  },
+  "authentication": {
+    "enabled": false
+  }
+}

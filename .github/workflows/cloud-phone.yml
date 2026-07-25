@@ -33,6 +33,10 @@ on:
         required: false
         default: true
         type: boolean
+      android_version:
+        description: 'Android Version (11, 12, 13, 14)'
+        required: false
+        default: '11'
       session_hours:
         description: 'Max Session Duration (hours)'
         required: false
@@ -78,6 +82,7 @@ jobs:
             -e ROOT_SETUP=$(echo "${{ github.event.inputs.enable_root }}" | tr '[:upper:]' '[:lower:]') \
             -e GAPPS_SETUP=$(echo "${{ github.event.inputs.enable_gapps }}" | tr '[:upper:]' '[:lower:]') \
             -e ARM_TRANSLATION=$(echo "${{ github.event.inputs.enable_arm }}" | tr '[:upper:]' '[:lower:]') \
+            -e ANDROID_VERSION=${{ github.event.inputs.android_version }} \
             shmayro/dockerify-android:latest
           echo "Android emulator starting..."
 
@@ -96,7 +101,7 @@ jobs:
 
       - name: Wait for Android Boot
         run: |
-          echo "Waiting for Android to boot (first boot may take 15+ mins)..."
+          echo "Waiting for Android ${{ github.event.inputs.android_version }} to boot (first boot may take 10+ mins)..."
           BOOT="0"
           for i in $(seq 1 1200); do
             BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")

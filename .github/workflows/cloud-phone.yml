@@ -1,6 +1,6 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v7.0 — WS-SCRCPY EDITION
+# Cloud Android Phone v7.0 — WS-SCRCPY EDITION (Fixed Config)
 # ═══════════════════════════════════════════════════════════════════════════════
 name: Cloud Android Phone v7.0 (ws-scrcpy)
 
@@ -95,10 +95,27 @@ jobs:
           npm install
           echo "✅ ws-scrcpy installed"
 
-      - name: Copy ws-scrcpy Configuration
+      - name: Generate ws-scrcpy Configuration
         run: |
-          cp /home/ubuntu/ws-scrcpy-config.yaml ws-scrcpy/config.yaml
-          echo "✅ ws-scrcpy configuration copied"
+          cat <<EOF > ws-scrcpy/config.yaml
+          runGoogTracker: true
+          runApplTracker: false
+          server:
+            - secure: false
+              port: 8000
+          scrcpy:
+            port: 8080
+            maxSize: 720
+            bitRate: 1000000
+            maxFps: 20
+            encoderName: "OMX.google.h264.encoder"
+            tunnelForward: true
+            audio: false
+            control: true
+            cleanup: true
+            rawStream: true
+          EOF
+          echo "✅ ws-scrcpy configuration generated"
 
       - name: Wait for Android Boot
         run: |
@@ -112,7 +129,6 @@ jobs:
             BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
               echo "✅ Android boot completed after $((i*2))s"
-              # Ensure screen is awake and unlocked
               adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
               adb -s localhost:5555 shell wm dismiss-keyguard
               adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
@@ -131,7 +147,7 @@ jobs:
           cd ws-scrcpy
           WS_SCRCPY_CONFIG=$(pwd)/config.yaml npm start > ws-scrcpy.log 2>&1 &
           echo "✅ ws-scrcpy started in background"
-          sleep 30 # Give ws-scrcpy some time to start
+          sleep 30
 
       - name: Start nport Tunnel
         id: tunnel

@@ -4,7 +4,7 @@ paths:
     source: publisher
 
 # Enable WebRTC
-webrtc: yes
+webrtc: no
 webrtcAddress: :8889
 webrtcEncryption: no
 webrtcLocalUDPAddress: '' # Disable UDP to force TCP

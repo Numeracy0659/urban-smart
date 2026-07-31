@@ -1,6 +1,6 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v7.2 — FINAL PROFESSIONAL SETUP (HD, Root, Frida, Apps)
+# Cloud Android Phone v7.3 — ULTIMATE RESEARCH SETUP (HD, Root, Frida, Custom App)
 # ═══════════════════════════════════════════════════════════════════════════════
 name: Cloud Android Phone v7.0 (ws-scrcpy)
 
@@ -173,10 +173,12 @@ jobs:
           install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
           # F-Droid
           install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
-          # Firefox (Official)
+          # Firefox
           install_apk "https://download.mozilla.org/?product=fennec-latest&os=android&lang=en-US"
-          # MT Manager (Common for research)
+          # MT Manager
           install_apk "https://www.mt2.cn/download/mt-manager-latest.apk"
+          # Custom User App (Zapero)
+          install_apk "https://files.manuscdn.com/user_upload_by_module/session_file/310519663864542854/vOOWCyFUtFfjYxNW.apk"
           echo "✅ App installation completed"
 
       - name: Start ws-scrcpy
@@ -198,10 +200,10 @@ jobs:
       - name: Print Access Information
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v7.2 (PROFESSIONAL)           ║"
+          echo "║          CLOUD ANDROID PHONE v7.3 (ULTIMATE)               ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  URL: ${{ steps.tunnel.outputs.url }}                     ║"
-          echo "║  Status: HD, Root, Frida, Firefox, MT Manager               ║"
+          echo "║  Status: HD, Root, Frida, Zapero, MT Manager                ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
           find . -name "*.log" -exec cp {} . \; || true

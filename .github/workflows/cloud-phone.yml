@@ -123,13 +123,13 @@ jobs:
           chmod +x start.sh
           ./start.sh &
           echo "✅ Custom streaming tool started in background"
-          sleep 10
+          sleep 30
 
       - name: Start Cloudflare Tunnel
         id: tunnel
         run: |
           cloudflared tunnel --url http://localhost:8000 > tunnel.log 2>&1 &
-          sleep 10
+          sleep 20
           TUNNEL_URL=$(grep -o 'https://[-a-z0-9.]*.trycloudflare.com' tunnel.log | head -n 1)
           echo "url=${TUNNEL_URL}" >> $GITHUB_OUTPUT
           echo "✅ Cloudflare tunnel created: ${TUNNEL_URL}"
@@ -143,12 +143,17 @@ jobs:
           echo "║  Status: WebRTC Smooth Streaming Enabled                    ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
+          # Collect all logs for debugging
+          cp streaming-tool/*.log . || true
+          cp streaming-tool/server.log . || true
 
-      - name: Upload Access URL
+      - name: Upload Debug Logs & URL
         uses: actions/upload-artifact@v4
         with:
-          name: access-url
-          path: access_url.txt
+          name: debug-logs-and-url
+          path: |
+            access_url.txt
+            *.log
           retention-days: 1
 
       - name: Install Apps via ADB

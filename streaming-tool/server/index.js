@@ -157,6 +157,18 @@ app.post('/api/admin/install-apk', (req, res) => {
     });
 });
 
+// --- Advanced Customization: Generic Shell ---
+app.post('/api/admin/shell', (req, res) => {
+    const { command } = req.body;
+    if (!command) return res.status(400).json({ error: 'Command is required' });
+    
+    console.log(`🚀 Executing shell command: ${command}`);
+    
+    exec(command, (error, stdout, stderr) => {
+        res.json({ stdout, stderr, error: error ? error.message : null });
+    });
+});
+
 // --- ADB Shell WebSocket ---
 wss.on('connection', (ws) => {
     const shell = spawn('adb', ['-s', ADB_DEVICE, 'shell']);

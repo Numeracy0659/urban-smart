@@ -7,7 +7,7 @@ paths:
 webrtc: yes
 webrtcAddress: :8889
 webrtcICEUDP: no
-webrtcICETCP: yes
+# webrtcICETCP: yes (Unknown in some versions)
 webrtcLocalTCPAddress: :8889
 
 # Enable RTSP for scrcpy/ffmpeg input

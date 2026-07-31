@@ -7,7 +7,7 @@ const SCRCPY_SERVER_PATH = process.env.SCRCPY_SERVER_PATH || '/usr/share/scrcpy/
 const RTSP_URL = 'rtsp://localhost:8554/mystream';
 
 async function start() {
-    console.log('🚀 Starting H.264 Extractor (High Compatibility Mode)...');
+    console.log('🚀 Starting H.264 Extractor (Max Compatibility Mode)...');
 
     // 1. Push scrcpy-server to device
     console.log(`📦 Pushing scrcpy-server from ${SCRCPY_SERVER_PATH}...`);
@@ -19,8 +19,7 @@ async function start() {
         
         // 2. Start scrcpy-server on device
         console.log('🎬 Starting scrcpy-server on device...');
-        // Arguments for scrcpy 2.4
-        // We set profile=66 (Baseline) to avoid B-frames which WebRTC doesn't support
+        // We use default profile and lower resolution to avoid MediaCodec errors
         const args = [
             '-s', ADB_DEVICE, 
             'shell', 
@@ -32,13 +31,13 @@ async function start() {
             'log_level=info',
             'video_bit_rate=2000000',
             'max_fps=30',
-            'max_size=1280',
+            'max_size=720', // Lower resolution for better stability
             'tunnel_forward=true',
             'audio=false',
             'control=false',
             'cleanup=true',
-            'raw_stream=true',
-            'video_codec_options=profile=66'
+            'raw_stream=true'
+            // Removed video_codec_options=profile=66 as it caused 0x80001001
         ];
 
         const serverProc = spawn('adb', args);
@@ -66,7 +65,6 @@ function connectAndPipe() {
     console.log('🔗 Connecting to video socket...');
     const socket = net.connect(27183, '127.0.0.1');
     
-    // We use -fflags nobuffer and -flags low_delay for minimal latency
     const ffmpeg = spawn('ffmpeg', [
         '-fflags', 'nobuffer',
         '-i', 'pipe:0',

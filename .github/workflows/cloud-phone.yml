@@ -1,8 +1,8 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v7.0 — WS-SCRCPY EDITION (Fixed Config)
+# Cloud Android Phone v7.1 — PROFESSIONAL HARDENING (HD, Root, Frida)
 # ═══════════════════════════════════════════════════════════════════════════════
-name: Cloud Android Phone v7.0 (ws-scrcpy)
+name: Cloud Android Phone v7.1 (Professional Hardening)
 
 on:
   workflow_dispatch:
@@ -16,9 +16,9 @@ on:
           - start
           - stop
       resolution:
-        description: 'Screen Resolution'
+        description: 'Screen Resolution (e.g., 1080x1920)'
         required: false
-        default: '720x1280'
+        default: '1080x1920' # Increased default resolution
       ram_mb:
         description: 'RAM (MB)'
         required: false
@@ -26,7 +26,7 @@ on:
       enable_root:
         description: 'Enable Root (Magisk)'
         required: false
-        default: false
+        default: true # Default to true for professional use
         type: boolean
       enable_gapps:
         description: 'Enable Google Apps (PICO)'
@@ -74,17 +74,17 @@ jobs:
             -e DNS=1.1.1.1 \
             -e RAM_SIZE=${{ github.event.inputs.ram_mb }} \
             -e "SCREEN_RESOLUTION=${{ github.event.inputs.resolution }}" \
+            -e SCREEN_DENSITY=420 \ # Added screen density for clarity
             -e ROOT_SETUP=$(echo "${{ github.event.inputs.enable_root }}" | tr '[:upper:]' '[:lower:]') \
             -e GAPPS_SETUP=$(echo "${{ github.event.inputs.enable_gapps }}" | tr '[:upper:]' '[:lower:]') \
             -e ARM_TRANSLATION=$(echo "${{ github.event.inputs.enable_arm }}" | tr '[:upper:]' '[:lower:]') \
-            shmayro/dockerify-android:latest
+            shmayro/dockerify-android:latest # Sticking with latest for now, as it supports root and ARM
           echo "✅ Android emulator container started"
 
       - name: Install ws-scrcpy Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y adb nodejs npm curl
-          # Install nport
+          sudo apt-get install -y adb nodejs npm curl wget unzip
           sudo npm install -g nport
           echo "✅ Dependencies installed"
 
@@ -105,9 +105,9 @@ jobs:
               port: 8000
           scrcpy:
             port: 8080
-            maxSize: 720
-            bitRate: 1000000
-            maxFps: 20
+            maxSize: ${{ github.event.inputs.resolution }} # Use workflow input for resolution
+            bitRate: 8000000 # Increased bitrate to 8Mbps for clarity
+            maxFps: 30 # Increased FPS for smoother experience
             encoderName: "OMX.google.h264.encoder"
             tunnelForward: true
             audio: false
@@ -117,7 +117,7 @@ jobs:
           EOF
           echo "✅ ws-scrcpy configuration generated"
 
-      - name: Wait for Android Boot
+      - name: Wait for Android Boot and Configure
         run: |
           MAX_WAIT=900
           echo "Waiting for Android to boot..."
@@ -129,9 +129,14 @@ jobs:
             BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
               echo "✅ Android boot completed after $((i*2))s"
+              # Ensure screen is awake and unlocked
               adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
               adb -s localhost:5555 shell wm dismiss-keyguard
               adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
+              # Verify root access
+              if ${{ github.event.inputs.enable_root }}; then
+                adb -s localhost:5555 shell "su -c 'id'" && echo "✅ Root access verified" || echo "❌ Root access NOT verified"
+              fi
               exit 0
             fi
             if [ $((i % 30)) -eq 0 ]; then
@@ -141,6 +146,20 @@ jobs:
           done
           echo "❌ Boot timed out!"
           exit 1
+
+      - name: Deploy and Start Frida Server
+        if: github.event.inputs.enable_root == true # Only deploy if root is enabled
+        run: |
+          FRIDA_VERSION="16.1.3" # Use a recent stable Frida version
+          FRIDA_SERVER_URL="https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz"
+          echo "Downloading Frida server from ${FRIDA_SERVER_URL}"
+          wget -q -O frida-server.xz ${FRIDA_SERVER_URL}
+          unxz frida-server.xz
+          chmod +x frida-server
+          adb -s localhost:5555 push frida-server /data/local/tmp/frida-server
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/frida-server"
+          adb -s localhost:5555 shell "/data/local/tmp/frida-server &" > /dev/null 2>&1
+          echo "✅ Frida server deployed and started"
 
       - name: Start ws-scrcpy
         run: |
@@ -161,10 +180,10 @@ jobs:
       - name: Print Access Information
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v7.0 (WS-SCRCPY)              ║"
+          echo "║          CLOUD ANDROID PHONE v7.1 (HARDENED)               ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  URL: ${{ steps.tunnel.outputs.url }}                     ║"
-          echo "║  Status: ws-scrcpy Stream Enabled                         ║"
+          echo "║  Status: HD Stream, Root, Frida-Ready                     ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
           find . -name "*.log" -exec cp {} . \; || true
@@ -176,6 +195,7 @@ jobs:
           path: |
             access_url.txt
             *.log
+            ws-scrcpy/ws-scrcpy.log # Include ws-scrcpy logs
           retention-days: 1
 
       - name: Install Apps via ADB
@@ -183,11 +203,27 @@ jobs:
         run: |
           echo "Installing apps..."
           install_apk() {
-            wget -q -O /tmp/app.apk "$1" && adb -s localhost:5555 install -r /tmp/app.apk
+            local apk_url="$1"
+            local app_name="$(basename "$apk_url")"
+            local max_retries=5
+            local delay_seconds=10
+            for attempt in $(seq 1 $max_retries); do
+              echo "Attempt $attempt to install $app_name..."
+              if wget -q -O /tmp/app.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/app.apk; then
+                echo "✅ Successfully installed $app_name"
+                return 0
+              else
+                echo "❌ Failed to install $app_name. Retrying in $delay_seconds seconds..."
+                sleep $delay_seconds
+              fi
+            done
+            echo "❌ Failed to install $app_name after $max_retries attempts."
+            return 1
           }
           install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
+          sleep 10 # Delay between installations
           install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
-          echo "✅ Apps installed"
+          echo "✅ App installation attempts completed"
 
       - name: Keep Session Alive
         run: |

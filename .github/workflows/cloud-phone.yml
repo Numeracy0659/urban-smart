@@ -83,10 +83,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg adb nodejs npm wget curl scrcpy libsdl2-2.0-0
-          # Install cloudflared
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-          rm cloudflared.deb
+          # Install nport
+          sudo npm install -g nport
           # Prepare custom tool
           cd streaming-tool/server && npm install
           echo "✅ Dependencies installed"
@@ -125,14 +123,16 @@ jobs:
           echo "✅ Custom streaming tool started in background"
           sleep 30
 
-      - name: Start Cloudflare Tunnel
+      - name: Start nport Tunnel
         id: tunnel
         run: |
-          cloudflared tunnel --url http://localhost:8000 > tunnel.log 2>&1 &
-          sleep 20
-          TUNNEL_URL=$(grep -o 'https://[-a-z0-9.]*.trycloudflare.com' tunnel.log | head -n 1)
+          # Use --language en to avoid interactive prompt
+          nport 8000 --language en > tunnel.log 2>&1 &
+          sleep 30
+          # Extract URL from nport output
+          TUNNEL_URL=$(grep -o 'https://[-a-z0-9.]*.nport.link' tunnel.log | head -n 1)
           echo "url=${TUNNEL_URL}" >> $GITHUB_OUTPUT
-          echo "✅ Cloudflare tunnel created: ${TUNNEL_URL}"
+          echo "✅ nport tunnel created: ${TUNNEL_URL}"
 
       - name: Print Access Information
         run: |

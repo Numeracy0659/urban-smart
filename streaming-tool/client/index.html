@@ -5,44 +5,51 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Cloud Android Phone</title>
     <style>
-        body { margin: 0; padding: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
+        body { margin: 0; padding: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; touch-action: none; }
         #container { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; }
-        #video-wrapper { position: relative; flex-grow: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; }
-        video { max-width: 100%; max-height: 100%; background: #222; }
-        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
+        #video-wrapper { position: relative; flex-grow: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; background: #111; }
+        video { max-width: 100%; max-height: 100%; background: #000; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; z-index: 10; }
         
-        #controls { height: 60px; background: #111; display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #333; }
-        .btn { padding: 10px 15px; background: #333; border: none; color: #fff; border-radius: 5px; cursor: pointer; }
-        .btn:active { background: #555; }
+        #controls { height: 60px; background: #1a1a1a; display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #333; z-index: 20; }
+        .btn { padding: 12px 20px; background: #333; border: 1px solid #444; color: #fff; border-radius: 8px; cursor: pointer; font-size: 18px; transition: all 0.2s; }
+        .btn:active { background: #555; transform: scale(0.95); }
         
-        #terminal-toggle { position: absolute; top: 10px; right: 10px; z-index: 100; }
+        #terminal-toggle { position: absolute; top: 10px; right: 10px; z-index: 100; opacity: 0.6; }
+        #terminal-toggle:hover { opacity: 1; }
+        
         #terminal-container { 
-            position: absolute; bottom: 60px; left: 0; width: 100%; height: 30%; 
-            background: rgba(0,0,0,0.8); display: none; flex-direction: column;
-            border-top: 1px solid #444;
+            position: absolute; bottom: 60px; left: 0; width: 100%; height: 40%; 
+            background: rgba(0,0,0,0.9); display: none; flex-direction: column;
+            border-top: 1px solid #444; z-index: 50;
         }
-        #terminal-output { flex-grow: 1; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 12px; }
-        #terminal-input { background: #222; border: none; color: #0f0; padding: 10px; font-family: monospace; }
+        #terminal-output { flex-grow: 1; overflow-y: auto; padding: 10px; font-family: 'Courier New', monospace; font-size: 13px; color: #0f0; }
+        #terminal-input { background: #111; border: none; color: #fff; padding: 15px; font-family: monospace; border-top: 1px solid #333; }
+        
+        .status-bar { position: absolute; top: 0; left: 0; width: 100%; height: 4px; background: #333; z-index: 100; }
+        .status-progress { height: 100%; width: 0%; background: #007bff; transition: width 0.3s; }
     </style>
 </head>
 <body>
     <div id="container">
+        <div class="status-bar"><div id="status-progress" class="status-progress"></div></div>
         <div id="video-wrapper">
             <video id="video" autoplay playsinline muted></video>
             <div id="overlay"></div>
-            <button id="terminal-toggle" class="btn">Shell</button>
+            <button id="terminal-toggle" class="btn">💻 Shell</button>
         </div>
         
         <div id="terminal-container">
             <div id="terminal-output"></div>
-            <input type="text" id="terminal-input" placeholder="Type ADB command and press Enter...">
+            <input type="text" id="terminal-input" placeholder="Type ADB command (e.g. ls, pm list packages)...">
         </div>
         
         <div id="controls">
-            <button class="btn" onclick="sendKey(3)">🏠 Home</button>
-            <button class="btn" onclick="sendKey(4)">⬅️ Back</button>
-            <button class="btn" onclick="sendKey(187)">📋 Recents</button>
-            <button class="btn" onclick="sendKey(26)">🔌 Power</button>
+            <button class="btn" onclick="sendKey(3)" title="Home">🏠</button>
+            <button class="btn" onclick="sendKey(4)" title="Back">⬅️</button>
+            <button class="btn" onclick="sendKey(187)" title="Recents">📋</button>
+            <button class="btn" onclick="sendKey(26)" title="Power">🔌</button>
+            <button class="btn" onclick="toggleKeyboard()" title="Keyboard">⌨️</button>
         </div>
     </div>
 
@@ -53,36 +60,62 @@
         const terminalContainer = document.getElementById('terminal-container');
         const terminalOutput = document.getElementById('terminal-output');
         const terminalInput = document.getElementById('terminal-input');
+        const statusProgress = document.getElementById('status-progress');
         
         let deviceWidth = 720;
         let deviceHeight = 1280;
+        let isConnecting = false;
 
         // --- WebRTC Setup ---
         async function startWebRTC() {
-            // Use relative path to proxy through Node.js server
-            const url = '/whep';
+            if (isConnecting) return;
+            isConnecting = true;
+            statusProgress.style.width = '30%';
             
-            const pc = new RTCPeerConnection({
-                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-            });
-            
-            pc.ontrack = (event) => {
-                video.srcObject = event.streams[0];
-            };
-            
-            pc.addTransceiver('video', { direction: 'recvonly' });
-            
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            
-            const response = await fetch(url, {
-                method: 'POST',
-                body: offer.sdp,
-                headers: { 'Content-Type': 'application/sdp' }
-            });
-            
-            const answer = await response.text();
-            await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answer }));
+            try {
+                const pc = new RTCPeerConnection({
+                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                });
+                
+                pc.ontrack = (event) => {
+                    console.log('✅ Received video track');
+                    video.srcObject = event.streams[0];
+                    statusProgress.style.width = '100%';
+                    setTimeout(() => statusProgress.style.width = '0%', 1000);
+                };
+                
+                pc.oniceconnectionstatechange = () => {
+                    console.log('ICE State:', pc.iceConnectionState);
+                    if (pc.iceConnectionState === 'failed') {
+                        console.log('❌ ICE Failed, retrying...');
+                        setTimeout(startWebRTC, 2000);
+                    }
+                };
+                
+                pc.addTransceiver('video', { direction: 'recvonly' });
+                
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                
+                statusProgress.style.width = '60%';
+                const response = await fetch('/whep', {
+                    method: 'POST',
+                    body: offer.sdp,
+                    headers: { 'Content-Type': 'application/sdp' }
+                });
+                
+                if (!response.ok) throw new Error('Signaling failed');
+                
+                const answer = await response.text();
+                await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answer }));
+                statusProgress.style.width = '80%';
+            } catch (e) {
+                console.error('WebRTC Error:', e);
+                statusProgress.style.width = '0%';
+                setTimeout(startWebRTC, 5000);
+            } finally {
+                isConnecting = false;
+            }
         }
 
         // --- ADB Control ---
@@ -105,6 +138,14 @@
             });
         }
 
+        function sendSwipe(x1, y1, x2, y2, duration) {
+            fetch('/api/control/swipe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ x1, y1, x2, y2, duration })
+            });
+        }
+
         function sendKey(code) {
             fetch('/api/control/key', {
                 method: 'POST',
@@ -113,18 +154,74 @@
             });
         }
 
-        overlay.addEventListener('click', (e) => {
+        // --- Touch/Mouse Gestures ---
+        let startX, startY, startTime;
+        let isDown = false;
+
+        function getCoords(e) {
             const rect = video.getBoundingClientRect();
-            const x = Math.round((e.clientX - rect.left) / rect.width * deviceWidth);
-            const y = Math.round((e.clientY - rect.top) / rect.height * deviceHeight);
-            sendTap(x, y);
-        });
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const x = Math.round((clientX - rect.left) / rect.width * deviceWidth);
+            const y = Math.round((clientY - rect.top) / rect.height * deviceHeight);
+            return { x, y };
+        }
+
+        function handleStart(e) {
+            isDown = true;
+            const { x, y } = getCoords(e);
+            startX = x;
+            startY = y;
+            startTime = Date.now();
+        }
+
+        function handleEnd(e) {
+            if (!isDown) return;
+            isDown = false;
+            
+            const clientX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
+            const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
+            const rect = video.getBoundingClientRect();
+            const endX = Math.round((clientX - rect.left) / rect.width * deviceWidth);
+            const endY = Math.round((clientY - rect.top) / rect.height * deviceHeight);
+            
+            const dist = Math.sqrt(Math.pow(endX - startX, 2) + Math.pow(endY - startY, 2));
+            const duration = Date.now() - startTime;
+            
+            if (dist < 10 && duration < 300) {
+                sendTap(startX, startY);
+            } else {
+                sendSwipe(startX, startY, endX, endY, duration);
+            }
+        }
+
+        overlay.addEventListener('mousedown', handleStart);
+        overlay.addEventListener('mouseup', handleEnd);
+        overlay.addEventListener('touchstart', (e) => { e.preventDefault(); handleStart(e); });
+        overlay.addEventListener('touchend', (e) => { e.preventDefault(); handleEnd(e); });
+
+        // --- Keyboard ---
+        function toggleKeyboard() {
+            const text = prompt("Enter text to send to device:");
+            if (text) {
+                fetch('/api/control/text', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                });
+            }
+        }
 
         // --- Terminal ---
-        const ws = new WebSocket('ws://' + window.location.host);
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const ws = new WebSocket(wsProtocol + window.location.host);
+        
         ws.onmessage = (e) => {
             terminalOutput.innerText += e.data;
             terminalOutput.scrollTop = terminalOutput.scrollHeight;
+            if (terminalOutput.innerText.length > 10000) {
+                terminalOutput.innerText = terminalOutput.innerText.slice(-5000);
+            }
         };
 
         terminalInput.addEventListener('keypress', (e) => {
@@ -141,6 +238,9 @@
         // Initialize
         fetchInfo();
         startWebRTC();
+        
+        // Handle window resize
+        window.addEventListener('resize', fetchInfo);
     </script>
 </body>
 </html>

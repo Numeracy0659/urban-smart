@@ -82,14 +82,21 @@ jobs:
       - name: Install Custom Tool Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg adb nodejs npm wget curl scrcpy libsdl2-2.0-0
+          sudo apt-get install -y ffmpeg adb nodejs npm wget curl libsdl2-2.0-0
+          # Install scrcpy 2.4+ (latest) to ensure we have the latest server jar
+          # We'll download the server jar directly to be safe
+          mkdir -p streaming-tool/bin
+          curl -L -o streaming-tool/bin/scrcpy-server https://github.com/Genymobile/scrcpy/releases/download/v2.4/scrcpy-server-v2.4
+          export SCRCPY_SERVER_PATH=$(pwd)/streaming-tool/bin/scrcpy-server
+          
           # Install nport
           sudo npm install -g nport
+          
           # Download MediaMTX
-          mkdir -p streaming-tool/bin
           curl -L -o mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_linux_amd64.tar.gz
           tar -xzf mediamtx.tar.gz -C streaming-tool/bin mediamtx
           rm mediamtx.tar.gz
+          
           # Prepare custom tool
           cd streaming-tool/server && npm install
           echo "✅ Dependencies installed"
@@ -124,7 +131,9 @@ jobs:
         run: |
           cd streaming-tool
           chmod +x start.sh
-          ./start.sh &
+          # Set the server path for the extractor
+          export SCRCPY_SERVER_PATH=$(pwd)/bin/scrcpy-server
+          ./start.sh
           echo "✅ Custom streaming tool started in background"
           sleep 30
 

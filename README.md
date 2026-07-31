@@ -1,95 +1,57 @@
-# Cloud Android Phone
+# Cloud Android Phone v7.0 — Custom WebRTC Edition
 
-Full Android phone in your browser — on-demand, secure, ephemeral, zero cost.
+A high-performance, low-latency Cloud Android Phone streaming tool that runs on GitHub Actions and provides a smooth, browser-based experience.
 
-## Architecture
+## 🚀 Key Features
 
+*   **Ultra-Low Latency**: Custom H.264 extraction from `scrcpy-server` socket for <100ms video lag.
+*   **Smooth Input**: Persistent ADB shell connection for instant touch and swipe response.
+*   **WebRTC Streaming**: High-quality, adaptive video streaming using MediaMTX and WHEP.
+*   **Single-Port Tunneling**: Fully compatible with `nport` and other single-port TCP tunnels.
+*   **Touch & Gesture Support**: Full support for tap, swipe, and keyboard input in the browser.
+*   **Persistent ADB Shell**: Integrated terminal for advanced control and debugging.
+
+## 🏗️ Architecture
+
+```mermaid
+graph TD
+    UserBrowser[User Browser] -->|HTTPS/TCP (nport)| nportTunnel[nport Tunnel]
+    nportTunnel -->|Port 8000| Multiplexer[Port Multiplexer]
+    
+    Multiplexer -->|HTTP/WS| ControlServer[Node.js Control Server]
+    Multiplexer -->|WebRTC TCP| MediaMTX[MediaMTX Server]
+    
+    ControlServer -->|ADB Socket| AndroidDevice[Android Emulator]
+    scrcpyExtractor[H.264 Extractor] -->|Socket| AndroidDevice
+    scrcpyExtractor -->|RTSP| MediaMTX
+    
+    MediaMTX -->|WebRTC Media| Multiplexer
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    GitHub Actions Runner                     │
-│  ┌──────────────────┐    ┌──────────────┐                   │
-│  │ dockerify-android │←→ │ scrcpy-web    │                   │
-│  │ (Android 14)      │    │ (H.264/WS)    │                   │
-│  │ + ARM Translation │    │ Port 8000     │                   │
-│  │ + Root + GAPPS    │    │               │                   │
-│  └──────────────────┘    └──────┬───────┘                   │
-│                                  │                          │
-│                          ┌───────▼───────┐                   │
-│                          │  bore.pub      │                   │
-│                          │  (Tunnel)      │                   │
-│                          └───────┬───────┘                   │
-└──────────────────────────────────┼──────────────────────────┘
-                                   │
-                            ┌──────▼──────┐
-                            │  Your Phone  │
-                            │  (Browser)   │
-                            └─────────────┘
-```
 
-## Features
+## 🛠️ Components
 
-| Feature | Details |
-|---------|---------|
-| Android 14 (API 34) | Pixel 6 device profile |
-| Browser Streaming | scrcpy-web — H.264 over WebSocket, 60fps |
-| Public URL | bore.pub tunnel — instant public URL |
-| Root Access | Magisk pre-installed (toggle) |
-| Google Apps | PICO GAPPS (toggle) |
-| ARM Translation | Run ARM apps on x86 (toggle) |
-| Session Duration | Up to 6 hours (configurable) |
-| Zero Cost | GitHub Actions free tier |
+1.  **Android Emulator**: Android 14 (API 34) running in a Docker container with KVM acceleration.
+2.  **scrcpy-server**: Pushed to the device to capture raw H.264 video.
+3.  **H.264 Extractor**: Custom Node.js script to parse scrcpy packets and feed them to MediaMTX.
+4.  **MediaMTX**: Media server for RTSP ingestion and WebRTC egress.
+5.  **Node.js Gateway**: Handles signaling, ADB control, and static file serving.
+6.  **Port Multiplexer**: A custom proxy that routes traffic to the correct component based on protocol.
 
-## Quick Start
+## 🏁 Quick Start
 
-1. Go to **Actions** tab in your repository
-2. Click **"Run workflow"** → select **"start"**
-3. Configure options (root, GAPPS, resolution)
-4. Wait 10-15 minutes for boot
-5. Open the URL from the workflow logs or download the artifact
+### Using GitHub Actions (Recommended)
+1.  Fork this repository.
+2.  Go to the **Actions** tab and select **Start Cloud Phone**.
+3.  Click **Run workflow**.
+4.  Once started, check the logs for the **nport Tunnel URL**.
 
-## Configuration Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `action` | start | `start` or `stop` |
-| `resolution` | 720x1280 | Screen resolution |
-| `ram_mb` | 4096 | RAM in MB |
-| `enable_root` | true | Enable Magisk root |
-| `enable_gapps` | true | Enable PICO GAPPS |
-| `enable_arm` | true | ARM translation for ARM apps |
-| `session_hours` | 6 | Max session duration |
-
-## How It Works
-
-1. **Workflow triggers** — You manually start the workflow from GitHub Actions
-2. **KVM enabled** — Hardware acceleration for the Android emulator
-3. **Docker images pulled** — Pre-built Android and streaming images
-4. **Android boots** — Emulator initializes with your configured options
-5. **scrcpy-web starts** — H.264 WebSocket streaming on port 8000
-6. **Tunnel created** — bore.pub exposes port 8000 to the internet
-7. **Access your phone** — Open the URL in any browser
-8. **Session alive** — Workflow monitors for up to 6 hours
-9. **Auto cleanup** — When session ends, everything is destroyed
-
-## Local Usage
-
+### Local Setup
 ```bash
-# Quick start
-chmod +x start.sh stop.sh
+git clone https://github.com/Numeracy0659/urban-smart.git
+cd urban-smart
 ./start.sh
-
-# Stop
-./stop.sh
 ```
+Access the phone at `http://localhost:8000`.
 
-## Technology Stack
-
-- [shmayro/dockerify-android](https://github.com/Shmayro/dockerify-android) — Android emulator in Docker
-- [shmayro/scrcpy-web](https://github.com/Shmayro/ws-scrcpy-docker) — Browser streaming
-- [codetalkio/expose-tunnel](https://github.com/marketplace/actions/expose-tunnel) — bore.pub tunnel
-- [ekzhang/bore](https://github.com/ekzhang/bore) — Tunneling service
-- [ws-scrcpy](https://github.com/NetrisTV/ws-scrcpy) — WebSocket scrcpy client
-
-## License
-
-MIT
+## 📜 License
+MIT License

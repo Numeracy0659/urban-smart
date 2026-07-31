@@ -6,13 +6,15 @@ paths:
 # Enable WebRTC
 webrtc: yes
 webrtcAddress: :8889
-webrtcICEUDP: yes
+webrtcICEUDP: no
 webrtcICETCP: yes
-# We don't set external IPs because they are dynamic via the tunnel
+# The external IP will be set dynamically by the supervisor or start script
+# webrtcExternalIP: [TUNNEL_URL]
 
 # Enable RTSP for scrcpy/ffmpeg input
 rtsp: yes
 rtspAddress: :8554
+rtspTransport: tcp
 
 # Disable other protocols to save resources
 hls: no

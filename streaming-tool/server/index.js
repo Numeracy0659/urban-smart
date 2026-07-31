@@ -4,6 +4,7 @@ const WebSocket = require('ws');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 const bodyParser = require('body-parser');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -16,7 +17,34 @@ app.use(bodyParser.json());
 app.use(bodyParser.text({ type: 'application/sdp' }));
 app.use(express.static(path.join(__dirname, '../client')));
 
-// --- WebRTC Signaling Proxy ---
+// --- Persistent ADB Shell for Control ---
+let adbShell = null;
+
+function startAdbShell() {
+    console.log('🔗 Starting persistent ADB shell...');
+    adbShell = spawn('adb', ['-s', ADB_DEVICE, 'shell']);
+    
+    adbShell.on('close', (code) => {
+        console.log(`⚠️ ADB shell closed with code ${code}, restarting...`);
+        setTimeout(startAdbShell, 1000);
+    });
+
+    adbShell.stderr.on('data', (data) => {
+        console.error(`[adb-shell-err] ${data}`);
+    });
+}
+
+function sendAdbCommand(cmd) {
+    if (adbShell && adbShell.stdin.writable) {
+        adbShell.stdin.write(cmd + '\n');
+        return true;
+    }
+    return false;
+}
+
+startAdbShell();
+
+// --- WebRTC Signaling Proxy with SDP Modification ---
 app.post('/whep', (req, res) => {
     const options = {
         hostname: 'localhost',
@@ -29,12 +57,33 @@ app.post('/whep', (req, res) => {
     };
 
     const proxyReq = http.request(options, (proxyRes) => {
-        res.writeHead(proxyRes.statusCode, proxyRes.headers);
-        proxyRes.pipe(res, { end: true });
+        let body = '';
+        proxyRes.on('data', (chunk) => body += chunk);
+        proxyRes.on('end', () => {
+            // Modify SDP to handle the tunnel URL
+            const host = req.headers.host; // e.g., user-123.nport.link
+            let modifiedSdp = body;
+            
+            if (host) {
+                console.log(`🔧 Modifying SDP for host: ${host}`);
+                // Replace internal IP with tunnel host
+                // WHEP answers usually contain ICE candidates
+                // We need to replace the IP and ensure the port is 443 (HTTPS)
+                // a=candidate:1 1 TCP 2128604671 127.0.0.1 8889 typ host ...
+                modifiedSdp = body.replace(/127\.0\.0\.1 8889/g, `${host} 443`);
+                modifiedSdp = modifiedSdp.replace(/0\.0\.0\.0 8889/g, `${host} 443`);
+                
+                // Also handle the c= line
+                modifiedSdp = modifiedSdp.replace(/c=IN IP4 127\.0\.0\.1/g, `c=IN IP4 0.0.0.0`);
+            }
+            
+            res.writeHead(proxyRes.statusCode, proxyRes.headers);
+            res.end(modifiedSdp);
+        });
     });
 
     proxyReq.on('error', (e) => {
-        console.error(`Problem with request: ${e.message}`);
+        console.error(`Problem with signaling proxy: ${e.message}`);
         res.status(500).send(e.message);
     });
 
@@ -43,46 +92,40 @@ app.post('/whep', (req, res) => {
 });
 
 // --- ADB Control Endpoints ---
-
-// Handle touch/click events
 app.post('/api/control/tap', (req, res) => {
     const { x, y } = req.body;
-    try {
-        execSync(`adb -s ${ADB_DEVICE} shell input tap ${x} ${y}`);
+    if (sendAdbCommand(`input tap ${x} ${y}`)) {
         res.json({ status: 'ok' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    } else {
+        res.status(500).json({ error: 'ADB shell not available' });
     }
 });
 
 app.post('/api/control/swipe', (req, res) => {
     const { x1, y1, x2, y2, duration } = req.body;
-    try {
-        execSync(`adb -s ${ADB_DEVICE} shell input swipe ${x1} ${y1} ${x2} ${y2} ${duration || 300}`);
+    if (sendAdbCommand(`input swipe ${x1} ${y1} ${x2} ${y2} ${duration || 300}`)) {
         res.json({ status: 'ok' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    } else {
+        res.status(500).json({ error: 'ADB shell not available' });
     }
 });
 
 app.post('/api/control/key', (req, res) => {
     const { code } = req.body;
-    try {
-        execSync(`adb -s ${ADB_DEVICE} shell input keyevent ${code}`);
+    if (sendAdbCommand(`input keyevent ${code}`)) {
         res.json({ status: 'ok' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    } else {
+        res.status(500).json({ error: 'ADB shell not available' });
     }
 });
 
 app.post('/api/control/text', (req, res) => {
     const { text } = req.body;
-    try {
-        const escaped = text.replace(/ /g, '%s').replace(/"/g, '\\"');
-        execSync(`adb -s ${ADB_DEVICE} shell input text "${escaped}"`);
+    const escaped = text.replace(/ /g, '%s').replace(/"/g, '\\"');
+    if (sendAdbCommand(`input text "${escaped}"`)) {
         res.json({ status: 'ok' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    } else {
+        res.status(500).json({ error: 'ADB shell not available' });
     }
 });
 
@@ -101,30 +144,15 @@ app.get('/api/info/resolution', (req, res) => {
 });
 
 // --- ADB Shell WebSocket ---
-
 wss.on('connection', (ws) => {
     console.log('New WebSocket connection for ADB shell');
-    
     const shell = spawn('adb', ['-s', ADB_DEVICE, 'shell']);
-    
-    shell.stdout.on('data', (data) => {
-        ws.send(data.toString());
-    });
-    
-    shell.stderr.on('data', (data) => {
-        ws.send(data.toString());
-    });
-    
-    ws.on('message', (message) => {
-        shell.stdin.write(message + '\n');
-    });
-    
-    ws.on('close', () => {
-        shell.kill();
-    });
+    shell.stdout.on('data', (data) => ws.send(data.toString()));
+    shell.stderr.on('data', (data) => ws.send(data.toString()));
+    ws.on('message', (message) => shell.stdin.write(message + '\n'));
+    ws.on('close', () => shell.kill());
 });
 
 server.listen(PORT, () => {
-    console.log(`Control server listening on port ${PORT}`);
-    console.log(`Targeting ADB device: ${ADB_DEVICE}`);
+    console.log(`🚀 Control server listening on port ${PORT}`);
 });

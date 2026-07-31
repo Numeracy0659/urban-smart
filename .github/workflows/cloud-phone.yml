@@ -1,6 +1,6 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v7.1 — PROFESSIONAL HARDENING (HD, Root, Frida)
+# Cloud Android Phone v7.2 — FINAL PROFESSIONAL SETUP (HD, Root, Frida, Apps)
 # ═══════════════════════════════════════════════════════════════════════════════
 name: Cloud Android Phone v7.0 (ws-scrcpy)
 
@@ -16,7 +16,7 @@ on:
           - start
           - stop
       resolution:
-        description: 'Screen Resolution (e.g., 1080x1920)'
+        description: 'Screen Resolution'
         required: false
         default: '1080x1920'
       ram_mb:
@@ -159,6 +159,26 @@ jobs:
           adb -s localhost:5555 shell "/data/local/tmp/frida-server &" > /dev/null 2>&1
           echo "✅ Frida server deployed and started"
 
+      - name: Install Professional Tools via ADB
+        continue-on-error: true
+        run: |
+          echo "Installing apps..."
+          install_apk() {
+            local apk_url="$1"
+            local app_name="$(basename "$apk_url")"
+            echo "Installing $app_name..."
+            wget -q -O /tmp/app.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/app.apk && echo "✅ Installed $app_name" || echo "❌ Failed $app_name"
+          }
+          # Termux
+          install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
+          # F-Droid
+          install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
+          # Firefox (Official)
+          install_apk "https://download.mozilla.org/?product=fennec-latest&os=android&lang=en-US"
+          # MT Manager (Common for research)
+          install_apk "https://www.mt2.cn/download/mt-manager-latest.apk"
+          echo "✅ App installation completed"
+
       - name: Start ws-scrcpy
         run: |
           cd ws-scrcpy
@@ -178,10 +198,10 @@ jobs:
       - name: Print Access Information
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v7.1 (HARDENED)               ║"
+          echo "║          CLOUD ANDROID PHONE v7.2 (PROFESSIONAL)           ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  URL: ${{ steps.tunnel.outputs.url }}                     ║"
-          echo "║  Status: HD Stream, Root, Frida-Ready                     ║"
+          echo "║  Status: HD, Root, Frida, Firefox, MT Manager               ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
           find . -name "*.log" -exec cp {} . \; || true
@@ -195,33 +215,6 @@ jobs:
             *.log
             ws-scrcpy/ws-scrcpy.log
           retention-days: 1
-
-      - name: Install Apps via ADB
-        continue-on-error: true
-        run: |
-          echo "Installing apps..."
-          install_apk() {
-            local apk_url="$1"
-            local app_name="$(basename "$apk_url")"
-            local max_retries=5
-            local delay_seconds=10
-            for attempt in $(seq 1 $max_retries); do
-              echo "Attempt $attempt to install $app_name..."
-              if wget -q -O /tmp/app.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/app.apk; then
-                echo "✅ Successfully installed $app_name"
-                return 0
-              else
-                echo "❌ Failed to install $app_name. Retrying in $delay_seconds seconds..."
-                sleep $delay_seconds
-              fi
-            done
-            echo "❌ Failed to install $app_name after $max_retries attempts."
-            return 1
-          }
-          install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
-          sleep 10
-          install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
-          echo "✅ App installation attempts completed"
 
       - name: Keep Session Alive
         run: |

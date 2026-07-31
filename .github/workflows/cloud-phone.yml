@@ -1,8 +1,9 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v7.0 — CUSTOM WEBRTC EDITION
-# ═══════════════════════════════════════════════════════════════════════════════
 
-name: Cloud Android Phone v7.0
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cloud Android Phone v7.0 — WS-SCRCPY EDITION
+# ═══════════════════════════════════════════════════════════════════════════════
+name: Cloud Android Phone v7.0 (ws-scrcpy)
+
 on:
   workflow_dispatch:
     inputs:
@@ -79,46 +80,44 @@ jobs:
             shmayro/dockerify-android:latest
           echo "✅ Android emulator container started"
 
-      - name: Install Custom Tool Dependencies
+      - name: Install ws-scrcpy Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg adb nodejs npm wget curl libsdl2-2.0-0
-          # Install scrcpy 2.4+ (latest) to ensure we have the latest server jar
-          # We'll download the server jar directly to be safe
-          mkdir -p streaming-tool/bin
-          curl -L -o streaming-tool/bin/scrcpy-server https://github.com/Genymobile/scrcpy/releases/download/v2.4/scrcpy-server-v2.4
-          export SCRCPY_SERVER_PATH=$(pwd)/streaming-tool/bin/scrcpy-server
-          
+          sudo apt-get install -y adb nodejs npm curl
           # Install nport
           sudo npm install -g nport
-          
-          # Download MediaMTX
-          curl -L -o mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_linux_amd64.tar.gz
-          tar -xzf mediamtx.tar.gz -C streaming-tool/bin mediamtx
-          rm mediamtx.tar.gz
-          
-          # Prepare custom tool
-          cd streaming-tool/server && npm install
           echo "✅ Dependencies installed"
+
+      - name: Clone and Install ws-scrcpy
+        run: |
+          git clone https://github.com/NetrisTV/ws-scrcpy.git
+          cd ws-scrcpy
+          npm install
+          echo "✅ ws-scrcpy installed"
+
+      - name: Copy ws-scrcpy Configuration
+        run: |
+          cp /home/ubuntu/ws-scrcpy-config.yaml ws-scrcpy/config.yaml
+          echo "✅ ws-scrcpy configuration copied"
 
       - name: Wait for Android Boot
         run: |
           MAX_WAIT=900
           echo "Waiting for Android to boot..."
-          # Initial connect
           adb connect localhost:5555 || true
           for i in $(seq 1 ${MAX_WAIT}); do
-            # Periodically retry connection if not connected
             if ! adb devices | grep -q "localhost:5555.*device"; then
               adb connect localhost:5555 > /dev/null 2>&1 || true
             fi
-            
             BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
               echo "✅ Android boot completed after $((i*2))s"
+              # Ensure screen is awake and unlocked
+              adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
+              adb -s localhost:5555 shell wm dismiss-keyguard
+              adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
               exit 0
             fi
-            
             if [ $((i % 30)) -eq 0 ]; then
               echo "  ... still booting ($((i*2))s) ..."
             fi
@@ -127,23 +126,18 @@ jobs:
           echo "❌ Boot timed out!"
           exit 1
 
-      - name: Start Custom Streaming Tool
+      - name: Start ws-scrcpy
         run: |
-          cd streaming-tool
-          chmod +x start.sh
-          # Set the server path for the extractor
-          export SCRCPY_SERVER_PATH=$(pwd)/bin/scrcpy-server
-          ./start.sh
-          echo "✅ Custom streaming tool started in background"
-          sleep 30
+          cd ws-scrcpy
+          WS_SCRCPY_CONFIG=$(pwd)/config.yaml npm start > ws-scrcpy.log 2>&1 &
+          echo "✅ ws-scrcpy started in background"
+          sleep 30 # Give ws-scrcpy some time to start
 
       - name: Start nport Tunnel
         id: tunnel
         run: |
-          # Use --language en to avoid interactive prompt
           nport 8000 --language en > tunnel.log 2>&1 &
           sleep 30
-          # Extract URL from nport output
           TUNNEL_URL=$(grep -o 'https://[-a-z0-9.]*.nport.link' tunnel.log | head -n 1)
           echo "url=${TUNNEL_URL}" >> $GITHUB_OUTPUT
           echo "✅ nport tunnel created: ${TUNNEL_URL}"
@@ -151,13 +145,12 @@ jobs:
       - name: Print Access Information
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v7.0 (WEBRTC)                 ║"
+          echo "║          CLOUD ANDROID PHONE v7.0 (WS-SCRCPY)              ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  URL: ${{ steps.tunnel.outputs.url }}                     ║"
-          echo "║  Status: WebRTC Smooth Streaming Enabled                    ║"
+          echo "║  Status: ws-scrcpy Stream Enabled                         ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
-          # Collect all logs for debugging
           find . -name "*.log" -exec cp {} . \; || true
 
       - name: Upload Debug Logs & URL

@@ -32,7 +32,6 @@ async function start() {
             'max_size=1280',
             'video_bit_rate=2000000',
             'max_fps=30',
-            'locked_video_orientation=-1',
             'tunnel_forward=true',
             'control=true',
             'display_id=0',

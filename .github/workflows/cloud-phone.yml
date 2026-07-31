@@ -1,6 +1,6 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v7.4 — NETWORK & APP FIX (HD, Root, Frida, Zapero Fix)
+# Cloud Android Phone v7.5 — NETWORK & ARM FIX (HD, Root, Frida, Zapero Fix)
 # ═══════════════════════════════════════════════════════════════════════════════
 name: Cloud Android Phone v7.0 (ws-scrcpy)
 
@@ -71,8 +71,6 @@ jobs:
             --privileged \
             --device /dev/kvm \
             -p 5555:5555 \
-            --dns 8.8.8.8 \
-            --dns 8.8.4.4 \
             -e DNS=8.8.8.8 \
             -e RAM_SIZE=${{ github.event.inputs.ram_mb }} \
             -e "SCREEN_RESOLUTION=${{ github.event.inputs.resolution }}" \
@@ -131,24 +129,17 @@ jobs:
             BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
               echo "✅ Android boot completed after $((i*2))s"
-              # Network Fixes
-              adb -s localhost:5555 shell settings put global airplane_mode_on 0
-              adb -s localhost:5555 shell svc wifi enable
-              adb -s localhost:5555 shell svc data enable
-              adb -s localhost:5555 shell setprop net.dns1 8.8.8.8
-              adb -s localhost:5555 shell setprop net.dns2 8.8.4.4
+              # Fix Internet Connection
+              adb -s localhost:5555 shell "su -c 'setprop net.dns1 8.8.8.8'"
+              adb -s localhost:5555 shell "su -c 'setprop net.dns2 8.8.4.4'"
+              adb -s localhost:5555 shell "su -c 'svc wifi enable'"
+              adb -s localhost:5555 shell "su -c 'svc data enable'"
+              adb -s localhost:5555 shell "su -c 'settings put global airplane_mode_on 0'"
               # Screen Configuration
               adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
               adb -s localhost:5555 shell wm dismiss-keyguard
               adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
-              if [ "${{ github.event.inputs.enable_root }}" = "true" ]; then
-                adb -s localhost:5555 shell "su -c 'id'" && echo "✅ Root access verified" || echo "❌ Root access NOT verified"
-              fi
-              echo "✅ Network and device configuration completed"
               exit 0
-            fi
-            if [ $((i % 30)) -eq 0 ]; then
-              echo "  ... still booting ($((i*2))s) ..."
             fi
             sleep 2
           done
@@ -160,42 +151,39 @@ jobs:
         run: |
           FRIDA_VERSION="16.1.3"
           FRIDA_SERVER_URL="https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz"
-          echo "Downloading Frida server from ${FRIDA_SERVER_URL}"
           wget -q -O frida-server.xz ${FRIDA_SERVER_URL}
           unxz frida-server.xz
           chmod +x frida-server
           adb -s localhost:5555 push frida-server /data/local/tmp/frida-server
           adb -s localhost:5555 shell "chmod 755 /data/local/tmp/frida-server"
           adb -s localhost:5555 shell "su -c '/data/local/tmp/frida-server &'" > /dev/null 2>&1
-          echo "✅ Frida server deployed and started with root"
+          echo "✅ Frida server deployed and started"
 
-      - name: Install Professional Tools via ADB
+      - name: Install Apps and Verify Internet
         continue-on-error: true
         run: |
           echo "Installing apps..."
+          # Test internet before install
+          adb -s localhost:5555 shell "ping -c 2 8.8.8.8" || echo "⚠️ Device still reports offline"
+          
           install_apk() {
             local apk_url="$1"
-            local app_name="$(basename "$apk_url")"
-            echo "Installing $app_name..."
-            wget -q -O /tmp/app.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/app.apk && echo "✅ Installed $app_name" || echo "❌ Failed $app_name"
+            wget -q -O /tmp/app.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/app.apk && echo "✅ Installed $(basename $apk_url)"
           }
-          # Termux
           install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
-          # F-Droid
           install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
-          # Firefox
           install_apk "https://download.mozilla.org/?product=fennec-latest&os=android&lang=en-US"
-          # MT Manager
           install_apk "https://www.mt2.cn/download/mt-manager-latest.apk"
-          # Custom User App (Zapero)
           install_apk "https://files.manuscdn.com/user_upload_by_module/session_file/310519663864542854/vOOWCyFUtFfjYxNW.apk"
+          
+          # Force ARM translation activation if possible
+          adb -s localhost:5555 shell "su -c 'pm install-existing com.google.android.gms'" || true
           echo "✅ App installation completed"
 
       - name: Start ws-scrcpy
         run: |
           cd ws-scrcpy
           WS_SCRCPY_CONFIG=$(pwd)/config.yaml npm start > ws-scrcpy.log 2>&1 &
-          echo "✅ ws-scrcpy started in background"
           sleep 30
 
       - name: Start nport Tunnel
@@ -205,34 +193,15 @@ jobs:
           sleep 30
           TUNNEL_URL=$(grep -o 'https://[-a-z0-9.]*.nport.link' tunnel.log | head -n 1)
           echo "url=${TUNNEL_URL}" >> $GITHUB_OUTPUT
-          echo "✅ nport tunnel created: ${TUNNEL_URL}"
 
       - name: Print Access Information
         run: |
-          echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v7.4 (FIXED)                  ║"
-          echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║  URL: ${{ steps.tunnel.outputs.url }}                     ║"
-          echo "║  Status: HD, Root, Frida, Zapero Fix, Internet Fix          ║"
-          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo "URL: ${{ steps.tunnel.outputs.url }}"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
-          find . -name "*.log" -exec cp {} . \; || true
-
-      - name: Upload Debug Logs & URL
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-logs-and-url
-          path: |
-            access_url.txt
-            *.log
-            ws-scrcpy/ws-scrcpy.log
-          retention-days: 1
 
       - name: Keep Session Alive
         run: |
-          echo "Session started for ${{ github.event.inputs.session_hours }} hours"
           END_TIME=$(( $(date +%s) + ${{ github.event.inputs.session_hours }} * 3600 ))
           while [ $(date +%s) -lt $END_TIME ]; do
-            echo "Session active... $(date)"
             sleep 300
           done

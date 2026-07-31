@@ -1,0 +1,14 @@
+# MediaMTX configuration
+paths:
+  mystream:
+    source: publisher
+
+# Enable WebRTC
+webrtc: yes
+webrtcAddress: :8889
+webrtcICEUDP: yes
+webrtcICEUDPServerPort: 19302
+
+# Enable API for monitoring if needed
+api: yes
+apiAddress: :9997

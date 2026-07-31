@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Cloud Android Phone</title>
+    <style>
+        body { margin: 0; padding: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
+        #container { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+        #video-wrapper { position: relative; flex-grow: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; }
+        video { max-width: 100%; max-height: 100%; background: #222; }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
+        
+        #controls { height: 60px; background: #111; display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #333; }
+        .btn { padding: 10px 15px; background: #333; border: none; color: #fff; border-radius: 5px; cursor: pointer; }
+        .btn:active { background: #555; }
+        
+        #terminal-toggle { position: absolute; top: 10px; right: 10px; z-index: 100; }
+        #terminal-container { 
+            position: absolute; bottom: 60px; left: 0; width: 100%; height: 30%; 
+            background: rgba(0,0,0,0.8); display: none; flex-direction: column;
+            border-top: 1px solid #444;
+        }
+        #terminal-output { flex-grow: 1; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 12px; }
+        #terminal-input { background: #222; border: none; color: #0f0; padding: 10px; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="video-wrapper">
+            <video id="video" autoplay playsinline muted></video>
+            <div id="overlay"></div>
+            <button id="terminal-toggle" class="btn">Shell</button>
+        </div>
+        
+        <div id="terminal-container">
+            <div id="terminal-output"></div>
+            <input type="text" id="terminal-input" placeholder="Type ADB command and press Enter...">
+        </div>
+        
+        <div id="controls">
+            <button class="btn" onclick="sendKey(3)">🏠 Home</button>
+            <button class="btn" onclick="sendKey(4)">⬅️ Back</button>
+            <button class="btn" onclick="sendKey(187)">📋 Recents</button>
+            <button class="btn" onclick="sendKey(26)">🔌 Power</button>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const overlay = document.getElementById('overlay');
+        const terminalToggle = document.getElementById('terminal-toggle');
+        const terminalContainer = document.getElementById('terminal-container');
+        const terminalOutput = document.getElementById('terminal-output');
+        const terminalInput = document.getElementById('terminal-input');
+        
+        let deviceWidth = 720;
+        let deviceHeight = 1280;
+
+        // --- WebRTC Setup ---
+        async function startWebRTC() {
+            // MediaMTX WebRTC endpoint
+            const url = 'http://' + window.location.hostname + ':8889/mystream/whep';
+            
+            const pc = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+            
+            pc.ontrack = (event) => {
+                video.srcObject = event.streams[0];
+            };
+            
+            pc.addTransceiver('video', { direction: 'recvonly' });
+            
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            
+            const response = await fetch(url, {
+                method: 'POST',
+                body: offer.sdp,
+                headers: { 'Content-Type': 'application/sdp' }
+            });
+            
+            const answer = await response.text();
+            await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answer }));
+        }
+
+        // --- ADB Control ---
+        async function fetchInfo() {
+            try {
+                const res = await fetch('/api/info/resolution');
+                const data = await res.json();
+                if (data.width) {
+                    deviceWidth = data.width;
+                    deviceHeight = data.height;
+                }
+            } catch (e) {}
+        }
+
+        function sendTap(x, y) {
+            fetch('/api/control/tap', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ x, y })
+            });
+        }
+
+        function sendKey(code) {
+            fetch('/api/control/key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code })
+            });
+        }
+
+        overlay.addEventListener('click', (e) => {
+            const rect = video.getBoundingClientRect();
+            const x = Math.round((e.clientX - rect.left) / rect.width * deviceWidth);
+            const y = Math.round((e.clientY - rect.top) / rect.height * deviceHeight);
+            sendTap(x, y);
+        });
+
+        // --- Terminal ---
+        const ws = new WebSocket('ws://' + window.location.host);
+        ws.onmessage = (e) => {
+            terminalOutput.innerText += e.data;
+            terminalOutput.scrollTop = terminalOutput.scrollHeight;
+        };
+
+        terminalInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                ws.send(terminalInput.value);
+                terminalInput.value = '';
+            }
+        });
+
+        terminalToggle.onclick = () => {
+            terminalContainer.style.display = terminalContainer.style.display === 'none' ? 'flex' : 'none';
+        };
+
+        // Initialize
+        fetchInfo();
+        startWebRTC();
+    </script>
+</body>
+</html>

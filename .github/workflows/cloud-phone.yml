@@ -1,21 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v6.0 — PRODUCTION (FINAL)
-# ═══════════════════════════════════════════════════════════════════════════════
-# Based on analysis of 17 workflow runs.
-# Proven architecture from successful runs #6, #7, #9, #11.
-#
-# KEY LESSONS LEARNED:
-# 1. ROOT + GAPPS adds 20-30min to boot → use ROOT=false for fast 10-15min boot
-# 2. Docker shmayro image is the proven working base
-# 3. scrcpy-web with --link to emulator container is the working streaming method
-# 4. bore.pub tunnel via codetalkio/expose-tunnel works reliably
-# 5. Keep Session Alive loop is essential for maintaining the 6h session
-# 6. Apps installed via ADB AFTER boot (not during boot)
-# 7. Android 11 (API 30) boots faster than Android 14
-#
+# Cloud Android Phone v7.0 — CUSTOM WEBRTC EDITION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-name: Cloud Android Phone v6.0
+name: Cloud Android Phone v7.0
 on:
   workflow_dispatch:
     inputs:
@@ -36,12 +23,12 @@ on:
         required: false
         default: '4096'
       enable_root:
-        description: 'Enable Root (Magisk) — adds 10-15min to boot time'
+        description: 'Enable Root (Magisk)'
         required: false
         default: false
         type: boolean
       enable_gapps:
-        description: 'Enable Google Apps (PICO) — adds 10-15min to boot time'
+        description: 'Enable Google Apps (PICO)'
         required: false
         default: false
         type: boolean
@@ -54,25 +41,20 @@ on:
         description: 'Max Session Duration (hours)'
         required: false
         default: '6'
+
 permissions:
   contents: read
 
 jobs:
-  # ═════════════════════════════════════════════════════════════════════════════
-  # START PHONE
-  # ═════════════════════════════════════════════════════════════════════════════
   start-phone:
     name: Start Cloud Phone
     if: github.event.inputs.action == 'start'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-
-      # ── Step 1: Checkout ────────────────────────────────────────────────────
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ── Step 2: Enable KVM ──────────────────────────────────────────────────
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm.rules
@@ -80,16 +62,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           sudo chmod 666 /dev/kvm
           echo "✅ KVM enabled"
-          ls -la /dev/kvm
 
-      # ── Step 3: Pull Docker Images ──────────────────────────────────────────
-      - name: Pull Docker Images
-        run: |
-          docker pull shmayro/dockerify-android:latest
-          docker pull shmayro/scrcpy-web:latest
-          echo "✅ Docker images ready"
-
-      # ── Step 4: Start Android Emulator ─────────────────────────────────────
       - name: Start Android Emulator
         run: |
           docker run -d \
@@ -97,7 +70,7 @@ jobs:
             --privileged \
             --device /dev/kvm \
             -p 5555:5555 \
-            -e DNS=one.one.one.one \
+            -e DNS=1.1.1.1 \
             -e RAM_SIZE=${{ github.event.inputs.ram_mb }} \
             -e "SCREEN_RESOLUTION=${{ github.event.inputs.resolution }}" \
             -e ROOT_SETUP=$(echo "${{ github.event.inputs.enable_root }}" | tr '[:upper:]' '[:lower:]') \
@@ -105,244 +78,74 @@ jobs:
             -e ARM_TRANSLATION=$(echo "${{ github.event.inputs.enable_arm }}" | tr '[:upper:]' '[:lower:]') \
             shmayro/dockerify-android:latest
           echo "✅ Android emulator container started"
-          docker ps --filter name=dockerify-android
 
-      # ── Step 5: Wait 30s for Docker to initialize ───────────────────────────
-      - name: Wait for Docker Init
+      - name: Install Custom Tool Dependencies
         run: |
-          echo "Waiting 30s for Docker container to initialize..."
-          sleep 30
-          echo "✅ Docker initialized"
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg adb nodejs npm wget curl
+          # Install cloudflared
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          rm cloudflared.deb
+          # Prepare custom tool
+          cd streaming-tool/server && npm install
+          echo "✅ Dependencies installed"
 
-      # ── Step 6: Start scrcpy-web ───────────────────────────────────────────
-      - name: Start scrcpy-web
-        run: |
-          docker run -d \
-            --name scrcpy-web \
-            --privileged \
-            -p 8000:8000 \
-            --link dockerify-android \
-            shmayro/scrcpy-web:latest sh -c \
-            "adb connect dockerify-android:5555 && npm start"
-          echo "✅ scrcpy-web container started on port 8000"
-
-      # ── Step 7: Wait for Android Boot ──────────────────────────────────────
-      # CRITICAL: With ROOT=false + GAPPS=false, boot takes 10-15 minutes.
-      # With ROOT=true, boot takes 20-30 minutes.
-      # Timeout: 1800s (30 min) to cover both cases safely.
       - name: Wait for Android Boot
         run: |
           MAX_WAIT=1800
-          echo "Waiting for Android to boot (max ${MAX_WAIT}s)..."
-          echo "  ROOT=${{ github.event.inputs.enable_root }} | GAPPS=${{ github.event.inputs.enable_gapps }}"
-          BOOT="0"
+          echo "Waiting for Android to boot..."
           for i in $(seq 1 ${MAX_WAIT}); do
-            BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
+            BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
               echo "✅ Android boot completed after ${i}s"
               break
             fi
-            if [ $((i % 60)) -eq 0 ]; then
-              echo "  ... booting (${i}s) — checking status..."
-              docker exec dockerify-android adb devices 2>/dev/null || true
-              docker logs --since 60s dockerify-android 2>&1 | grep -E "Broadcast completed|Success !!" || true
-            fi
-            sleep 1
+            sleep 2
           done
-          if [ "${BOOT}" != "1" ]; then
-            echo "⚠️ Android boot didn't fully complete in ${MAX_WAIT}s."
-            echo "Checking Docker logs for clues..."
-            docker logs --tail 80 dockerify-android 2>&1 | tail -30
-          else
-            echo "✅ Boot fully successful!"
-          fi
 
-      # ── Step 8: Wait for scrcpy-web to be ready ────────────────────────────
-      - name: Wait for scrcpy-web
+      - name: Start Custom Streaming Tool
         run: |
-          echo "Waiting for scrcpy-web to be ready..."
-          for i in $(seq 1 120); do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 2>/dev/null || echo "000")
-            if [ "${HTTP_CODE}" != "000" ] && [ "${HTTP_CODE}" != "502" ] && [ "${HTTP_CODE}" != "503" ]; then
-              echo "✅ scrcpy-web ready (HTTP ${HTTP_CODE})"
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "⚠️ scrcpy-web may not be fully ready, continuing anyway..."
+          cd streaming-tool
+          chmod +x start.sh
+          ./start.sh &
+          echo "✅ Custom streaming tool started in background"
+          sleep 10
 
-      # ── Step 9: Create Public Tunnel ───────────────────────────────────────
-      - name: Create Public Tunnel
-        id: expose
-        uses: codetalkio/expose-tunnel@v1.5.0
-        with:
-          service: bore.pub
-          port: 8000
+      - name: Start Cloudflare Tunnel
+        id: tunnel
+        run: |
+          cloudflared tunnel --url http://localhost:8000 > tunnel.log 2>&1 &
+          sleep 10
+          TUNNEL_URL=$(grep -o 'https://[-a-z0-9.]*.trycloudflare.com' tunnel.log | head -n 1)
+          echo "url=${TUNNEL_URL}" >> $GITHUB_OUTPUT
+          echo "✅ Cloudflare tunnel created: ${TUNNEL_URL}"
 
-      # ── Step 10: Print Access Information ──────────────────────────────────
       - name: Print Access Information
         run: |
-          echo ""
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v6.0 IS READY!                ║"
+          echo "║          CLOUD ANDROID PHONE v7.0 (WEBRTC)                 ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║  URL: ${{ steps.expose.outputs.tunnel-url }}              ║"
-          echo "║  Android: API 34 (Android 14)                              ║"
-          echo "║  Resolution: ${{ github.event.inputs.resolution }}          ║"
-          echo "║  RAM: ${{ github.event.inputs.ram_mb }}MB                   ║"
-          echo "║  Root: ${{ github.event.inputs.enable_root }}                 ║"
-          echo "║  GAPPS: ${{ github.event.inputs.enable_gapps }}                ║"
-          echo "║  Session: ${{ github.event.inputs.session_hours }} hours max   ║"
+          echo "║  URL: ${{ steps.tunnel.outputs.url }}                     ║"
+          echo "║  Status: WebRTC Smooth Streaming Enabled                    ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
-          echo ""
-          echo "Open the URL in your browser to use your Cloud Android Phone!"
 
-      # ── Step 11: Save Access URL as Artifact ───────────────────────────────
-      - name: Save Access URL as Artifact
-        run: |
-          mkdir -p /tmp/access-info
-          cat > /tmp/access-info/url.txt << EOF
-          ${{ steps.expose.outputs.tunnel-url }}
-
-          Cloud Android Phone v6.0 — PRODUCTION
-          Android: API 34 (Android 14)
-          Resolution: ${{ github.event.inputs.resolution }}
-          RAM: ${{ github.event.inputs.ram_mb }}MB
-          Root: ${{ github.event.inputs.enable_root }}
-          GAPPS: ${{ github.event.inputs.enable_gapps }}
-          Session: ${{ github.event.inputs.session_hours }}h max
-
-          Open the URL above in your browser to use your Cloud Android Phone!
-          EOF
-          cat /tmp/access-info/url.txt
-
-      - name: Upload Access URL Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloud-phone-access-url
-          path: /tmp/access-info/
-          retention-days: 1
-
-      # ── Step 12: Install Apps via ADB (runs in background) ─────────────────
-      # Apps are installed AFTER boot to not block the tunnel creation.
-      # This step runs in the background and installs Termux, ScreenStream, etc.
       - name: Install Apps via ADB
         continue-on-error: true
         run: |
-          echo "Installing apps via ADB (background process)..."
-          
-          # Helper function to download and install APK
+          echo "Installing apps..."
           install_apk() {
-            local APK_URL="$1"
-            local APK_NAME="$2"
-            echo "  Downloading ${APK_NAME}..."
-            wget -q -O /tmp/${APK_NAME}.apk "${APK_URL}" && \
-            docker cp /tmp/${APK_NAME}.apk dockerify-android:/data/local/tmp/${APK_NAME}.apk && \
-            docker exec dockerify-android adb install -r /data/local/tmp/${APK_NAME}.apk 2>&1 | tail -5
-            echo ""
+            wget -q -O /tmp/app.apk "$1" && adb -s localhost:5555 install -r /tmp/app.apk
           }
+          install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
+          install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
+          echo "✅ Apps installed"
 
-          # Termux v0.118.3 (x86_64 build)
-          install_apk \
-            "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk" \
-            "termux"
-
-          # Termux:Boot
-          install_apk \
-            "https://github.com/termux/termux-boot/releases/download/v0.7.1/termux-boot_v0.7.1-github-release_universal.apk" \
-            "termux-boot"
-
-          # Termux:API
-          install_apk \
-            "https://github.com/termux/termux-api/releases/download/v0.50.1/termux-api_v0.50.1-github-release_universal.apk" \
-            "termux-api"
-
-          # F-Droid
-          install_apk \
-            "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk" \
-            "fdroid"
-
-          # ScreenStream
-          install_apk \
-            "https://github.com/krahsdevil/ScreenStream/releases/download/4.4.2/ScreenStream-4.4.2-playstore.apk" \
-            "screenstream"
-
-          # Firefox for Android
-          install_apk \
-            "https://download.mozilla.org/?product=fenix-latest&os=android&lang=en-US" \
-            "firefox"
-
-          echo "✅ App installation complete"
-
-      # ── Step 13: Configure Permissions ─────────────────────────────────────
-      - name: Configure Permissions
-        continue-on-error: true
-        run: |
-          echo "Configuring app permissions..."
-          ADB="docker exec dockerify-android adb"
-
-          # Grant overlay permission to Termux and ScreenStream
-          $ADB shell appops set com.termux SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
-          $ADB shell appops set io.github.krahsdevil.screenstream SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
-          $ADB shell appops set io.github.krahsdevil.screenstream SYSTEM_OVERLAY_WINDOW allow 2>/dev/null || true
-
-          # Disable battery optimization
-          $ADB shell dumpsys deviceidle whitelist +com.termux 2>/dev/null || true
-          $ADB shell dumpsys deviceidle whitelist +io.github.krahsdevil.screenstream 2>/dev/null || true
-
-          # Enable unknown sources
-          $ADB shell settings put secure install_non_market_apps 1 2>/dev/null || true
-
-          # Start ScreenStream
-          $ADB shell am start -n io.github.krahsdevil.screenstream/.MainActivity 2>/dev/null || true
-          sleep 3
-          $ADB shell input tap 540 1100 2>/dev/null || true  # Tap "Start" button
-
-          echo "✅ Permissions configured"
-
-      # ── Step 14: Keep Session Alive ────────────────────────────────────────
-      # This is the MOST CRITICAL step. It keeps the GitHub Actions job alive
-      # for the full session duration, maintaining the tunnel and containers.
-      # Without this, the workflow would exit immediately after setup.
       - name: Keep Session Alive
         run: |
-          MAX_SECONDS=$((${{ github.event.inputs.session_hours }} * 3600))
-          START_TIME=$(date +%s)
-          echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          SESSION ACTIVE — KEEPING ALIVE                      ║"
-          echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║  Max Duration: ${{ github.event.inputs.session_hours }} hours                       ║"
-          echo "║  Access URL: ${{ steps.expose.outputs.tunnel-url }}          ║"
-          echo "╚══════════════════════════════════════════════════════════════╝"
-          echo ""
-          while true; do
-            ELAPSED=$(($(date +%s) - START_TIME))
-            REMAINING=$((MAX_SECONDS - ELAPSED))
-            if [ "${REMAINING}" -le 0 ]; then
-              echo "⏰ TIME LIMIT REACHED (${MAX_SECONDS}s). Session ended."
-              exit 0
-            fi
-            BOOT=$(docker exec dockerify-android adb -s emulator-5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
-            HOURS=$((REMAINING / 3600))
-            MINUTES=$(((REMAINING % 3600) / 60))
-            if [ $((ELAPSED % 600)) -eq 0 ]; then
-              echo "[$(date -u)] Session: boot=${BOOT} | remaining=${HOURS}h ${MINUTES}m | URL=${{ steps.expose.outputs.tunnel-url }}"
-            fi
-            sleep 60
+          echo "Session started for ${{ github.event.inputs.session_hours }} hours"
+          END_TIME=$(( $(date +%s) + ${{ github.event.inputs.session_hours }} * 3600 ))
+          while [ $(date +%s) -lt $END_TIME ]; do
+            echo "Session active... $(date)"
+            sleep 300
           done
-
-  # ═════════════════════════════════════════════════════════════════════════════
-  # STOP PHONE
-  # ═════════════════════════════════════════════════════════════════════════════
-  stop-phone:
-    name: Stop Cloud Phone
-    if: github.event.inputs.action == 'stop'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Stop All Services
-        run: |
-          echo "Stopping cloud phone..."
-          docker stop scrcpy-web 2>/dev/null && docker rm scrcpy-web 2>/dev/null || true
-          docker stop dockerify-android 2>/dev/null && docker rm dockerify-android 2>/dev/null || true
-          docker system prune -f 2>/dev/null || true
-          echo "✅ All services stopped and cleaned up."

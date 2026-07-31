@@ -85,6 +85,11 @@ jobs:
           sudo apt-get install -y ffmpeg adb nodejs npm wget curl scrcpy libsdl2-2.0-0
           # Install nport
           sudo npm install -g nport
+          # Download MediaMTX
+          mkdir -p streaming-tool/bin
+          curl -L -o mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_linux_amd64.tar.gz
+          tar -xzf mediamtx.tar.gz -C streaming-tool/bin mediamtx
+          rm mediamtx.tar.gz
           # Prepare custom tool
           cd streaming-tool/server && npm install
           echo "✅ Dependencies installed"

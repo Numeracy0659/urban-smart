@@ -44,7 +44,7 @@ function sendAdbCommand(cmd) {
 
 startAdbShell();
 
-// --- WebRTC Signaling Proxy with SDP Modification ---
+// --- WebRTC Signaling Proxy with Advanced SDP Modification ---
 app.post('/whep', (req, res) => {
     const options = {
         hostname: 'localhost',
@@ -60,21 +60,24 @@ app.post('/whep', (req, res) => {
         let body = '';
         proxyRes.on('data', (chunk) => body += chunk);
         proxyRes.on('end', () => {
-            // Modify SDP to handle the tunnel URL
             const host = req.headers.host; // e.g., user-123.nport.link
             let modifiedSdp = body;
             
             if (host) {
                 console.log(`🔧 Modifying SDP for host: ${host}`);
-                // Replace internal IP with tunnel host
-                // WHEP answers usually contain ICE candidates
-                // We need to replace the IP and ensure the port is 443 (HTTPS)
-                // a=candidate:1 1 TCP 2128604671 127.0.0.1 8889 typ host ...
+                // 1. Replace internal IP/Port with tunnel host/443
+                // We handle multiple formats of candidates
                 modifiedSdp = body.replace(/127\.0\.0\.1 8889/g, `${host} 443`);
                 modifiedSdp = modifiedSdp.replace(/0\.0\.0\.0 8889/g, `${host} 443`);
+                modifiedSdp = modifiedSdp.replace(/localhost 8889/g, `${host} 443`);
                 
-                // Also handle the c= line
+                // 2. Ensure c= line is neutral
                 modifiedSdp = modifiedSdp.replace(/c=IN IP4 127\.0\.0\.1/g, `c=IN IP4 0.0.0.0`);
+                
+                // 3. Add a=ice-lite if not present (MediaMTX usually doesn't need it but good for some browsers)
+                // if (!modifiedSdp.includes('a=ice-lite')) {
+                //     modifiedSdp = modifiedSdp.replace('t=0 0', 't=0 0\na=ice-lite');
+                // }
             }
             
             res.writeHead(proxyRes.statusCode, proxyRes.headers);
@@ -83,7 +86,7 @@ app.post('/whep', (req, res) => {
     });
 
     proxyReq.on('error', (e) => {
-        console.error(`Problem with signaling proxy: ${e.message}`);
+        console.error(`❌ Signaling proxy error: ${e.message}`);
         res.status(500).send(e.message);
     });
 

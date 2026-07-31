@@ -7,49 +7,52 @@ const fs = require('fs');
 const ADB_DEVICE = process.env.ADB_DEVICE || 'localhost:5555';
 const PORT = 8000;
 const MEDIAMTX_PORT = 8889;
-const CONTROL_PORT = 8001; // Node.js control server will move here
+const CONTROL_PORT = 8001;
 
-console.log('🏗️ Starting Process Supervisor...');
+console.log('🏗️ Starting Process Supervisor (v7.1)...');
+
+let processes = {
+    mediamtx: null,
+    control: null,
+    extractor: null
+};
 
 // 1. Start MediaMTX
 function startMediaMTX() {
     console.log('📡 Starting MediaMTX...');
-    const mediamtx = spawn('./bin/mediamtx', ['./server/mediamtx.yml'], {
+    processes.mediamtx = spawn('./bin/mediamtx', ['./server/mediamtx.yml'], {
         stdio: 'inherit'
     });
-    mediamtx.on('close', (code) => {
+    processes.mediamtx.on('close', (code) => {
         console.log(`⚠️ MediaMTX exited with code ${code}, restarting...`);
         setTimeout(startMediaMTX, 2000);
     });
-    return mediamtx;
 }
 
 // 2. Start Node.js Control Server
 function startControlServer() {
     console.log('🎮 Starting Control Server...');
-    const control = spawn('node', ['./server/index.js'], {
+    processes.control = spawn('node', ['./server/index.js'], {
         env: { ...process.env, PORT: CONTROL_PORT, ADB_DEVICE },
         stdio: 'inherit'
     });
-    control.on('close', (code) => {
+    processes.control.on('close', (code) => {
         console.log(`⚠️ Control Server exited with code ${code}, restarting...`);
         setTimeout(startControlServer, 2000);
     });
-    return control;
 }
 
 // 3. Start H.264 Extractor
 function startExtractor() {
     console.log('🎥 Starting H.264 Extractor...');
-    const extractor = spawn('node', ['./server/extractor.js'], {
+    processes.extractor = spawn('node', ['./server/extractor.js'], {
         env: { ...process.env, ADB_DEVICE },
         stdio: 'inherit'
     });
-    extractor.on('close', (code) => {
+    processes.extractor.on('close', (code) => {
         console.log(`⚠️ Extractor exited with code ${code}, restarting...`);
         setTimeout(startExtractor, 2000);
     });
-    return extractor;
 }
 
 // 4. Port Multiplexer (Port 8000 -> Control or MediaMTX)
@@ -59,10 +62,9 @@ function startMultiplexer() {
     const server = net.createServer((clientSocket) => {
         clientSocket.once('data', (data) => {
             const firstLine = data.toString().split('\n')[0];
+            // HTTP methods or WebSocket handshake
             const isHttp = /^(GET|POST|PUT|DELETE|OPTIONS|HEAD|PATCH)/.test(firstLine);
             
-            // Check if it's an ADB control request or static file
-            // WHEP signaling also goes through the control server proxy
             const targetPort = isHttp ? CONTROL_PORT : MEDIAMTX_PORT;
             
             const targetSocket = net.connect(targetPort, '127.0.0.1', () => {
@@ -85,6 +87,16 @@ function startMultiplexer() {
         console.log(`✅ Multiplexer listening on port ${PORT}`);
     });
 }
+
+// 5. Health Monitor
+setInterval(() => {
+    const status = {
+        mediamtx: processes.mediamtx && !processes.mediamtx.killed,
+        control: processes.control && !processes.control.killed,
+        extractor: processes.extractor && !processes.extractor.killed
+    };
+    console.log(`💓 Heartbeat: MediaMTX=${status.mediamtx}, Control=${status.control}, Extractor=${status.extractor}`);
+}, 30000);
 
 // Main Execution
 startMediaMTX();

@@ -7,8 +7,14 @@ paths:
 webrtc: yes
 webrtcAddress: :8889
 webrtcICEUDP: yes
-webrtcICEUDPServerPort: 19302
+webrtcICETCP: yes
+# We don't set external IPs because they are dynamic via the tunnel
 
-# Enable API for monitoring if needed
-api: yes
-apiAddress: :9997
+# Enable RTSP for scrcpy/ffmpeg input
+rtsp: yes
+rtspAddress: :8554
+
+# Disable other protocols to save resources
+hls: no
+rtmp: no
+srt: no

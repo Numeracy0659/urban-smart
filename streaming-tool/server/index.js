@@ -13,7 +13,34 @@ const PORT = process.env.PORT || 8000;
 const ADB_DEVICE = process.env.ADB_DEVICE || 'localhost:5555';
 
 app.use(bodyParser.json());
+app.use(bodyParser.text({ type: 'application/sdp' }));
 app.use(express.static(path.join(__dirname, '../client')));
+
+// --- WebRTC Signaling Proxy ---
+app.post('/whep', (req, res) => {
+    const options = {
+        hostname: 'localhost',
+        port: 8889,
+        path: '/mystream/whep',
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/sdp'
+        }
+    };
+
+    const proxyReq = http.request(options, (proxyRes) => {
+        res.writeHead(proxyRes.statusCode, proxyRes.headers);
+        proxyRes.pipe(res, { end: true });
+    });
+
+    proxyReq.on('error', (e) => {
+        console.error(`Problem with request: ${e.message}`);
+        res.status(500).send(e.message);
+    });
+
+    proxyReq.write(req.body);
+    proxyReq.end();
+});
 
 // --- ADB Control Endpoints ---
 

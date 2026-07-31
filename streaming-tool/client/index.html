@@ -59,8 +59,8 @@
 
         // --- WebRTC Setup ---
         async function startWebRTC() {
-            // MediaMTX WebRTC endpoint
-            const url = 'http://' + window.location.hostname + ':8889/mystream/whep';
+            // Use relative path to proxy through Node.js server
+            const url = '/whep';
             
             const pc = new RTCPeerConnection({
                 iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]

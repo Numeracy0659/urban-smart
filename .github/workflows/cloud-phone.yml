@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # Cloud Android Phone v7.1 — PROFESSIONAL HARDENING (HD, Root, Frida)
 # ═══════════════════════════════════════════════════════════════════════════════
-name: Cloud Android Phone v7.1 (Professional Hardening)
+name: Cloud Android Phone v7.0 (ws-scrcpy)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ on:
       resolution:
         description: 'Screen Resolution (e.g., 1080x1920)'
         required: false
-        default: '1080x1920' # Increased default resolution
+        default: '1080x1920'
       ram_mb:
         description: 'RAM (MB)'
         required: false
@@ -26,7 +26,7 @@ on:
       enable_root:
         description: 'Enable Root (Magisk)'
         required: false
-        default: true # Default to true for professional use
+        default: true
         type: boolean
       enable_gapps:
         description: 'Enable Google Apps (PICO)'
@@ -74,11 +74,11 @@ jobs:
             -e DNS=1.1.1.1 \
             -e RAM_SIZE=${{ github.event.inputs.ram_mb }} \
             -e "SCREEN_RESOLUTION=${{ github.event.inputs.resolution }}" \
-            -e SCREEN_DENSITY=420 \ # Added screen density for clarity
+            -e SCREEN_DENSITY=420 \
             -e ROOT_SETUP=$(echo "${{ github.event.inputs.enable_root }}" | tr '[:upper:]' '[:lower:]') \
             -e GAPPS_SETUP=$(echo "${{ github.event.inputs.enable_gapps }}" | tr '[:upper:]' '[:lower:]') \
             -e ARM_TRANSLATION=$(echo "${{ github.event.inputs.enable_arm }}" | tr '[:upper:]' '[:lower:]') \
-            shmayro/dockerify-android:latest # Sticking with latest for now, as it supports root and ARM
+            shmayro/dockerify-android:latest
           echo "✅ Android emulator container started"
 
       - name: Install ws-scrcpy Dependencies
@@ -105,9 +105,9 @@ jobs:
               port: 8000
           scrcpy:
             port: 8080
-            maxSize: ${{ github.event.inputs.resolution }} # Use workflow input for resolution
-            bitRate: 8000000 # Increased bitrate to 8Mbps for clarity
-            maxFps: 30 # Increased FPS for smoother experience
+            maxSize: 1920
+            bitRate: 8000000
+            maxFps: 30
             encoderName: "OMX.google.h264.encoder"
             tunnelForward: true
             audio: false
@@ -129,12 +129,10 @@ jobs:
             BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
               echo "✅ Android boot completed after $((i*2))s"
-              # Ensure screen is awake and unlocked
               adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
               adb -s localhost:5555 shell wm dismiss-keyguard
               adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
-              # Verify root access
-              if ${{ github.event.inputs.enable_root }}; then
+              if [ "${{ github.event.inputs.enable_root }}" = "true" ]; then
                 adb -s localhost:5555 shell "su -c 'id'" && echo "✅ Root access verified" || echo "❌ Root access NOT verified"
               fi
               exit 0
@@ -148,9 +146,9 @@ jobs:
           exit 1
 
       - name: Deploy and Start Frida Server
-        if: github.event.inputs.enable_root == true # Only deploy if root is enabled
+        if: github.event.inputs.enable_root == true
         run: |
-          FRIDA_VERSION="16.1.3" # Use a recent stable Frida version
+          FRIDA_VERSION="16.1.3"
           FRIDA_SERVER_URL="https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz"
           echo "Downloading Frida server from ${FRIDA_SERVER_URL}"
           wget -q -O frida-server.xz ${FRIDA_SERVER_URL}
@@ -195,7 +193,7 @@ jobs:
           path: |
             access_url.txt
             *.log
-            ws-scrcpy/ws-scrcpy.log # Include ws-scrcpy logs
+            ws-scrcpy/ws-scrcpy.log
           retention-days: 1
 
       - name: Install Apps via ADB
@@ -221,7 +219,7 @@ jobs:
             return 1
           }
           install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
-          sleep 10 # Delay between installations
+          sleep 10
           install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
           echo "✅ App installation attempts completed"
 

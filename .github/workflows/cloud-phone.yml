@@ -1,6 +1,6 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v7.3 — ULTIMATE RESEARCH SETUP (HD, Root, Frida, Custom App)
+# Cloud Android Phone v7.4 — NETWORK & APP FIX (HD, Root, Frida, Zapero Fix)
 # ═══════════════════════════════════════════════════════════════════════════════
 name: Cloud Android Phone v7.0 (ws-scrcpy)
 
@@ -71,7 +71,9 @@ jobs:
             --privileged \
             --device /dev/kvm \
             -p 5555:5555 \
-            -e DNS=1.1.1.1 \
+            --dns 8.8.8.8 \
+            --dns 8.8.4.4 \
+            -e DNS=8.8.8.8 \
             -e RAM_SIZE=${{ github.event.inputs.ram_mb }} \
             -e "SCREEN_RESOLUTION=${{ github.event.inputs.resolution }}" \
             -e SCREEN_DENSITY=420 \
@@ -129,12 +131,20 @@ jobs:
             BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
               echo "✅ Android boot completed after $((i*2))s"
+              # Network Fixes
+              adb -s localhost:5555 shell settings put global airplane_mode_on 0
+              adb -s localhost:5555 shell svc wifi enable
+              adb -s localhost:5555 shell svc data enable
+              adb -s localhost:5555 shell setprop net.dns1 8.8.8.8
+              adb -s localhost:5555 shell setprop net.dns2 8.8.4.4
+              # Screen Configuration
               adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
               adb -s localhost:5555 shell wm dismiss-keyguard
               adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
               if [ "${{ github.event.inputs.enable_root }}" = "true" ]; then
                 adb -s localhost:5555 shell "su -c 'id'" && echo "✅ Root access verified" || echo "❌ Root access NOT verified"
               fi
+              echo "✅ Network and device configuration completed"
               exit 0
             fi
             if [ $((i % 30)) -eq 0 ]; then
@@ -156,8 +166,8 @@ jobs:
           chmod +x frida-server
           adb -s localhost:5555 push frida-server /data/local/tmp/frida-server
           adb -s localhost:5555 shell "chmod 755 /data/local/tmp/frida-server"
-          adb -s localhost:5555 shell "/data/local/tmp/frida-server &" > /dev/null 2>&1
-          echo "✅ Frida server deployed and started"
+          adb -s localhost:5555 shell "su -c '/data/local/tmp/frida-server &'" > /dev/null 2>&1
+          echo "✅ Frida server deployed and started with root"
 
       - name: Install Professional Tools via ADB
         continue-on-error: true
@@ -200,10 +210,10 @@ jobs:
       - name: Print Access Information
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v7.3 (ULTIMATE)               ║"
+          echo "║          CLOUD ANDROID PHONE v7.4 (FIXED)                  ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  URL: ${{ steps.tunnel.outputs.url }}                     ║"
-          echo "║  Status: HD, Root, Frida, Zapero, MT Manager                ║"
+          echo "║  Status: HD, Root, Frida, Zapero Fix, Internet Fix          ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
           find . -name "*.log" -exec cp {} . \; || true

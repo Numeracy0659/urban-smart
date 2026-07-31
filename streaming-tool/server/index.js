@@ -139,6 +139,24 @@ app.post('/api/admin/install-frida', (req, res) => {
     });
 });
 
+// --- Advanced Customization: APK Installation ---
+app.post('/api/admin/install-apk', (req, res) => {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+    
+    const localPath = `/tmp/app.apk`;
+    console.log(`🚀 Installing APK from ${url}...`);
+    
+    exec(`wget -O ${localPath} "${url}" && adb -s ${ADB_DEVICE} install -r ${localPath}`, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`❌ APK installation failed: ${error.message}`);
+            return res.status(500).json({ error: error.message, stderr });
+        }
+        console.log(`✅ APK installed!`);
+        res.json({ status: 'ok', stdout });
+    });
+});
+
 // --- ADB Shell WebSocket ---
 wss.on('connection', (ws) => {
     const shell = spawn('adb', ['-s', ADB_DEVICE, 'shell']);

@@ -82,7 +82,7 @@ jobs:
       - name: Install Custom Tool Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg adb nodejs npm wget curl
+          sudo apt-get install -y ffmpeg adb nodejs npm wget curl scrcpy libsdl2-2.0-0
           # Install cloudflared
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
@@ -93,16 +93,29 @@ jobs:
 
       - name: Wait for Android Boot
         run: |
-          MAX_WAIT=1800
+          MAX_WAIT=900
           echo "Waiting for Android to boot..."
+          # Initial connect
+          adb connect localhost:5555 || true
           for i in $(seq 1 ${MAX_WAIT}); do
+            # Periodically retry connection if not connected
+            if ! adb devices | grep -q "localhost:5555.*device"; then
+              adb connect localhost:5555 > /dev/null 2>&1 || true
+            fi
+            
             BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
             if [ "${BOOT}" = "1" ]; then
-              echo "✅ Android boot completed after ${i}s"
-              break
+              echo "✅ Android boot completed after $((i*2))s"
+              exit 0
+            fi
+            
+            if [ $((i % 30)) -eq 0 ]; then
+              echo "  ... still booting ($((i*2))s) ..."
             fi
             sleep 2
           done
+          echo "❌ Boot timed out!"
+          exit 1
 
       - name: Start Custom Streaming Tool
         run: |

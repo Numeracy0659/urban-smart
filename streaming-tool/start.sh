@@ -9,20 +9,16 @@ SCRCPY_VERSION="2.1"
 
 echo "🚀 Starting Custom Android Streaming Tool..."
 
-# 1. Install Dependencies
-echo "📦 Installing system dependencies..."
-sudo apt-get update -y
-sudo apt-get install -y ffmpeg adb nodejs npm wget curl libsdl2-2.0-0
-
-# 2. Install scrcpy (if not present)
-if ! command -v scrcpy &> /dev/null; then
-    echo "📥 Installing scrcpy..."
-    sudo apt-get install -y scrcpy || {
-        # Fallback to manual install if apt version is too old
-        wget -q https://github.com/Genymobile/scrcpy/releases/download/v${SCRCPY_VERSION}/scrcpy-server-v${SCRCPY_VERSION}
-        sudo mv scrcpy-server-v${SCRCPY_VERSION} /usr/local/bin/scrcpy-server
-    }
-fi
+# 1. Check Dependencies
+echo "📦 Checking system dependencies..."
+# We assume dependencies are handled by the workflow for production, 
+# but we keep a lightweight check here.
+for cmd in ffmpeg adb node npm scrcpy; do
+    if ! command -v $cmd &> /dev/null; then
+        echo "⚠️ $cmd not found, attempting to install..."
+        sudo apt-get install -y $cmd || echo "Failed to install $cmd"
+    fi
+done
 
 # 3. Download MediaMTX
 if [ ! -f "./bin/mediamtx" ]; then

@@ -1,4 +1,4 @@
-# MediaMTX configuration
+# MediaMTX configuration (v1.9.0 compatible)
 paths:
   mystream:
     source: publisher
@@ -6,16 +6,23 @@ paths:
 # Enable WebRTC
 webrtc: yes
 webrtcAddress: :8889
-webrtcICEUDP: no
-# webrtcICETCP: yes (Unknown in some versions)
+webrtcEncryption: no
+webrtcLocalUDPAddress: '' # Disable UDP to force TCP
 webrtcLocalTCPAddress: :8889
+webrtcIPsFromInterfaces: yes
+webrtcAdditionalHosts: []
 
 # Enable RTSP for scrcpy/ffmpeg input
 rtsp: yes
 rtspAddress: :8554
+protocols: [tcp]
 
-# Disable other protocols to save resources
-hls: no
+# Enable HLS as a fallback
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+
+# Disable other protocols
 rtmp: no
 srt: no
 

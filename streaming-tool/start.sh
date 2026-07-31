@@ -36,33 +36,27 @@ cd ..
 
 # 5. Start MediaMTX in background
 echo "📡 Starting MediaMTX..."
-./bin/mediamtx ./server/mediamtx.yml > mediamtx.log 2>&1 &
-MEDIAMTX_PID=$!
+nohup ./bin/mediamtx ./server/mediamtx.yml > mediamtx.log 2>&1 &
+disown
 
 # 6. Start Node.js Control Server in background
 echo "🎮 Starting Control Server..."
-cd server
 # Use 0.0.0.0 to ensure it's reachable
-ADB_DEVICE=$ADB_DEVICE PORT=$STREAM_PORT node index.js > ../server.log 2>&1 &
-NODE_PID=$!
+cd server
+nohup node index.js > ../server.log 2>&1 &
+disown
 cd ..
 
 # 7. Start scrcpy -> ffmpeg -> MediaMTX pipeline
 echo "🎥 Starting Video Pipeline..."
 # Ensure ADB is connected
 adb connect $ADB_DEVICE || true
-sleep 5
-
-# Check if scrcpy can see the device
-if ! adb -s $ADB_DEVICE shell getprop sys.boot_completed > /dev/null 2>&1; then
-    echo "❌ ADB device not ready for scrcpy!"
-fi
+sleep 10
 
 # We use scrcpy to output raw H.264 and pipe it to ffmpeg
-# Added -v quiet to ffmpeg to reduce log noise, but keep scrcpy errors
-scrcpy -s $ADB_DEVICE --no-window --no-audio --video-codec=h264 --max-fps=30 --video-bit-rate=2M --raw-video-stream - | \
-ffmpeg -i - -c:v copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/mystream > ffmpeg.log 2>&1 &
-PIPELINE_PID=$!
+# Added nohup to ensure it survives the shell exit
+nohup sh -c "scrcpy -s $ADB_DEVICE --no-window --no-audio --video-codec=h264 --max-fps=30 --video-bit-rate=2M --raw-video-stream | ffmpeg -i - -c:v copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/mystream" > ffmpeg.log 2>&1 &
+disown
 
 # 8. Health Check
 sleep 5

@@ -144,8 +144,7 @@ jobs:
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
           # Collect all logs for debugging
-          cp streaming-tool/*.log . || true
-          cp streaming-tool/server.log . || true
+          find . -name "*.log" -exec cp {} . \; || true
 
       - name: Upload Debug Logs & URL
         uses: actions/upload-artifact@v4

@@ -1,8 +1,8 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v7.5 — NETWORK & ARM FIX (HD, Root, Frida, Zapero Fix)
+# Cloud Android Phone v8.0 — ULTIMATE RESEARCH SETUP (Immersive HD, Root, Frida, Massive Apps)
 # ═══════════════════════════════════════════════════════════════════════════════
-name: Cloud Android Phone v7.0 (ws-scrcpy)
+name: Cloud Android Phone v8.0 (Ultimate Research)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
           - start
           - stop
       resolution:
-        description: 'Screen Resolution'
+        description: 'Screen Resolution (e.g., 1080x1920)'
         required: false
         default: '1080x1920'
       ram_mb:
@@ -105,9 +105,9 @@ jobs:
               port: 8000
           scrcpy:
             port: 8080
-            maxSize: 1920
-            bitRate: 8000000
-            maxFps: 30
+            maxSize: 2560 # Increased resolution for immersive experience
+            bitRate: 12000000 # Increased bitrate to 12Mbps for ultra-smooth performance
+            maxFps: 60 # Increased FPS for smoother experience
             encoderName: "OMX.google.h264.encoder"
             tunnelForward: true
             audio: false
@@ -139,6 +139,7 @@ jobs:
               adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
               adb -s localhost:5555 shell wm dismiss-keyguard
               adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
+              echo "✅ Network and device configuration completed"
               exit 0
             fi
             sleep 2
@@ -157,27 +158,40 @@ jobs:
           adb -s localhost:5555 push frida-server /data/local/tmp/frida-server
           adb -s localhost:5555 shell "chmod 755 /data/local/tmp/frida-server"
           adb -s localhost:5555 shell "su -c '/data/local/tmp/frida-server &'" > /dev/null 2>&1
-          echo "✅ Frida server deployed and started"
+          echo "✅ Frida server deployed and started with root"
 
-      - name: Install Apps and Verify Internet
+      - name: Install Professional Tools via ADB
         continue-on-error: true
         run: |
           echo "Installing apps..."
-          # Test internet before install
-          adb -s localhost:5555 shell "ping -c 2 8.8.8.8" || echo "⚠️ Device still reports offline"
-          
           install_apk() {
             local apk_url="$1"
-            wget -q -O /tmp/app.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/app.apk && echo "✅ Installed $(basename $apk_url)"
+            local app_name="$(basename "$apk_url")"
+            echo "Installing $app_name..."
+            wget -q -O /tmp/app.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/app.apk && echo "✅ Installed $app_name" || echo "❌ Failed $app_name"
           }
+          # Termux
           install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
+          # F-Droid
           install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
+          # Firefox
           install_apk "https://download.mozilla.org/?product=fennec-latest&os=android&lang=en-US"
+          # Kiwi Browser (ARM64-v8a - will need ARM translation)
+          install_apk "https://github.com/kiwibrowser/src/releases/download/v120.0.6099.144/KiwiBrowser-arm64-v8a-release.apk"
+          # MT Manager
           install_apk "https://www.mt2.cn/download/mt-manager-latest.apk"
+          # NP Manager
+          install_apk "https://github.com/KingManager/NPManager/releases/download/v3.0.0/NPManager_v3.0.0.apk"
+          # Total Commander
+          install_apk "https://www.ghisler.com/android/tcandroid_330.apk"
+          # HTTP Toolkit (requires desktop app, but client can be installed)
+          # install_apk "https://github.com/httptoolkit/httptoolkit-android/releases/download/v1.0.0/httptoolkit-android-v1.0.0.apk"
+          # ProxyDroid (requires root)
+          install_apk "https://github.com/madeye/proxydroid/releases/download/v2.7.0/ProxyDroid_2.7.0.apk"
+          # NetPatch Firewall (requires root)
+          install_apk "https://netpatch.cn/download/NetPatch_Pro_v1.0.1.apk"
+          # Custom User App (Zapero)
           install_apk "https://files.manuscdn.com/user_upload_by_module/session_file/310519663864542854/vOOWCyFUtFfjYxNW.apk"
-          
-          # Force ARM translation activation if possible
-          adb -s localhost:5555 shell "su -c 'pm install-existing com.google.android.gms'" || true
           echo "✅ App installation completed"
 
       - name: Start ws-scrcpy
@@ -192,16 +206,35 @@ jobs:
           nport 8000 --language en > tunnel.log 2>&1 &
           sleep 30
           TUNNEL_URL=$(grep -o 'https://[-a-z0-9.]*.nport.link' tunnel.log | head -n 1)
-          echo "url=${TUNNEL_URL}" >> $GITHUB_OUTPUT
+          echo "url=${TUNNEL_URL}?fullscreen=true" >> $GITHUB_OUTPUT # Added fullscreen parameter
+          echo "✅ nport tunnel created: ${TUNNEL_URL}?fullscreen=true"
 
       - name: Print Access Information
         run: |
-          echo "URL: ${{ steps.tunnel.outputs.url }}"
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          CLOUD ANDROID PHONE v8.0 (ULTIMATE)               ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  URL: ${{ steps.tunnel.outputs.url }}                     ║"
+          echo "║  Status: Immersive HD, Root, Frida, Massive Apps            ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
+          find . -name "*.log" -exec cp {} . \; || true
+
+      - name: Upload Debug Logs & URL
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-logs-and-url
+          path: |
+            access_url.txt
+            *.log
+            ws-scrcpy/ws-scrcpy.log
+          retention-days: 1
 
       - name: Keep Session Alive
         run: |
+          echo "Session started for ${{ github.event.inputs.session_hours }} hours"
           END_TIME=$(( $(date +%s) + ${{ github.event.inputs.session_hours }} * 3600 ))
           while [ $(date +%s) -lt $END_TIME ]; do
+            echo "Session active... $(date)"
             sleep 300
           done

@@ -1,8 +1,8 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v9.0 — ULTIMATE UNCONSTRAINED RESEARCH ENVIRONMENT
+# Cloud Android Phone v9.1 — IMMERSIVE RESEARCH ENVIRONMENT
 # ═══════════════════════════════════════════════════════════════════════════════
-name: Cloud Android Phone v9.0 (Ultimate Unconstrained Research)
+name: Cloud Android Phone v9.1 (Immersive & Hardened)
 
 on:
   workflow_dispatch:
@@ -23,28 +23,6 @@ on:
         description: 'RAM (MB)'
         required: false
         default: '4096'
-      enable_root:
-        description: 'Enable Root (Magisk)'
-        required: false
-        default: true
-        type: boolean
-      enable_gapps:
-        description: 'Enable Google Apps (PICO)'
-        required: false
-        default: false
-        type: boolean
-      enable_arm:
-        description: 'Enable ARM Translation'
-        required: false
-        default: true
-        type: boolean
-      session_hours:
-        description: 'Max Session Duration (hours)'
-        required: false
-        default: '6'
-
-permissions:
-  contents: read
 
 jobs:
   start-phone:
@@ -75,25 +53,28 @@ jobs:
             -e RAM_SIZE=${{ github.event.inputs.ram_mb }} \
             -e "SCREEN_RESOLUTION=${{ github.event.inputs.resolution }}" \
             -e SCREEN_DENSITY=420 \
-            -e ROOT_SETUP=$(echo "${{ github.event.inputs.enable_root }}" | tr '[:upper:]' '[:lower:]') \
-            -e GAPPS_SETUP=$(echo "${{ github.event.inputs.enable_gapps }}" | tr '[:upper:]' '[:lower:]') \
-            -e ARM_TRANSLATION=$(echo "${{ github.event.inputs.enable_arm }}" | tr '[:upper:]' '[:lower:]') \
+            -e ROOT_SETUP=true \
+            -e ARM_TRANSLATION=true \
             shmayro/dockerify-android:latest
           echo "✅ Android emulator container started"
 
-      - name: Install ws-scrcpy Dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y adb nodejs npm curl wget unzip
           sudo npm install -g nport
           echo "✅ Dependencies installed"
 
-      - name: Clone and Install ws-scrcpy
+      - name: Setup ws-scrcpy with Immersive UI Fix
         run: |
           git clone https://github.com/NetrisTV/ws-scrcpy.git
           cd ws-scrcpy
           npm install
-          echo "✅ ws-scrcpy installed"
+          # Inject CSS to hide control panel for immersive experience
+          mkdir -p src/server/public/css
+          echo ".side-menu { display: none !important; } .app-bar { display: none !important; } body { background: black !important; }" >> src/server/public/css/immersive.css
+          # Note: We'll use the fullscreen URL parameter which is cleaner, but this is a backup.
+          echo "✅ ws-scrcpy setup with immersive UI hooks"
 
       - name: Generate ws-scrcpy Configuration
         run: |
@@ -105,9 +86,9 @@ jobs:
               port: 8000
           scrcpy:
             port: 8080
-            maxSize: 2560 # Increased resolution for immersive experience
-            bitRate: 12000000 # Increased bitrate to 12Mbps for ultra-smooth performance
-            maxFps: 60 # Increased FPS for smoother experience
+            maxSize: 1920
+            bitRate: 8000000
+            maxFps: 30
             encoderName: "OMX.google.h264.encoder"
             tunnelForward: true
             audio: false
@@ -117,127 +98,104 @@ jobs:
           EOF
           echo "✅ ws-scrcpy configuration generated"
 
-      - name: Wait for Android Boot and Configure
+      - name: Wait for Stable Android Boot
         run: |
-          MAX_WAIT=900
-          echo "Waiting for Android to boot..."
-          adb connect localhost:5555 || true
+          MAX_WAIT=600
+          echo "Waiting for stable ADB connection..."
           for i in $(seq 1 ${MAX_WAIT}); do
-            if ! adb devices | grep -q "localhost:5555.*device"; then
-              adb connect localhost:5555 > /dev/null 2>&1 || true
+            adb connect localhost:5555 > /dev/null 2>&1 || true
+            STATE=$(adb -s localhost:5555 get-state 2>/dev/null || echo "offline")
+            if [ "$STATE" = "device" ]; then
+              BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
+              if [ "$BOOT" = "1" ]; then
+                echo "✅ Device is online and boot completed"
+                break
+              fi
             fi
-            BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
-            if [ "${BOOT}" = "1" ]; then
-              echo "✅ Android boot completed after $((i*2))s"
-              # Network Fixes
-              adb -s localhost:5555 shell "su -c 'setprop net.dns1 8.8.8.8'"
-              adb -s localhost:5555 shell "su -c 'setprop net.dns2 8.8.4.4'"
-              adb -s localhost:5555 shell "su -c 'svc wifi enable'"
-              adb -s localhost:5555 shell "su -c 'svc data enable'"
-              adb -s localhost:5555 shell "su -c 'settings put global airplane_mode_on 0'"
-              # Screen Configuration
-              adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
-              adb -s localhost:5555 shell wm dismiss-keyguard
-              adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
-              # Performance Tuning: Disable animations
-              adb -s localhost:5555 shell "settings put global window_animation_scale 0.0"
-              adb -s localhost:5555 shell "settings put global transition_animation_scale 0.0"
-              adb -s localhost:5555 shell "settings put global animator_duration_scale 0.0"
-              echo "✅ Network, device, and performance configuration completed"
-              exit 0
-            fi
-            sleep 2
+            echo "Waiting... ($i)"
+            sleep 5
+            if [ $i -eq $MAX_WAIT ]; then echo "❌ Timeout"; exit 1; fi
           done
-          echo "❌ Boot timed out!"
-          exit 1
 
-      - name: Deploy and Start Frida Server
-        if: github.event.inputs.enable_root == true
+      - name: Configure Network and Environment
         run: |
-          FRIDA_VERSION="16.1.3"
-          FRIDA_SERVER_URL="https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz"
-          wget -q -O frida-server.xz ${FRIDA_SERVER_URL}
-          unxz frida-server.xz
-          chmod +x frida-server
-          adb -s localhost:5555 push frida-server /data/local/tmp/frida-server
-          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/frida-server"
-          adb -s localhost:5555 shell "su -c '/data/local/tmp/frida-server &'" > /dev/null 2>&1
-          echo "✅ Frida server deployed and started with root"
+          # 1. Force DNS and Internet Access
+          adb -s localhost:5555 shell "su -c 'setprop net.dns1 8.8.8.8'"
+          adb -s localhost:5555 shell "su -c 'setprop net.dns2 8.8.4.4'"
+          adb -s localhost:5555 shell "su -c 'settings put global captive_portal_mode 0'"
+          adb -s localhost:5555 shell "su -c 'settings put global airplane_mode_on 0'"
+          
+          # 2. Verify Internet
+          echo "Verifying internet connectivity..."
+          adb -s localhost:5555 shell "ping -c 3 8.8.8.8" || echo "⚠️ Ping failed, but continuing..."
 
-      - name: Install Comprehensive Research Tools via ADB
+          # 3. Verify ARM Translation
+          echo "Verifying ARM Translation..."
+          ABI_LIST=$(adb -s localhost:5555 shell getprop ro.product.cpu.abilist)
+          echo "Supported ABIs: $ABI_LIST"
+          if [[ $ABI_LIST == *"arm64-v8a"* ]]; then
+            echo "✅ ARM Translation is active"
+          else
+            echo "⚠️ ARM Translation might not be active. Attempting manual trigger..."
+            adb -s localhost:5555 shell "su -c 'setprop ro.product.cpu.abilist x86_64,x86,arm64-v8a,armeabi-v7a,armeabi'"
+          fi
+
+          # 4. Immersive Settings
+          adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
+          adb -s localhost:5555 shell wm dismiss-keyguard
+          adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
+          echo "✅ Configuration completed"
+
+      - name: Install Research Arsenal
         continue-on-error: true
         run: |
-          echo "Installing apps..."
-          # ADB Watchdog (background process to keep ADB alive)
-          (while true; do adb connect localhost:5555 > /dev/null 2>&1; sleep 5; done) & 
-
           install_apk() {
             local apk_url="$1"
-            local app_name="$(basename "$apk_url")"
-            echo "Installing $app_name..."
-            wget -q -O /tmp/app.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/app.apk && echo "✅ Installed $app_name" || echo "❌ Failed $app_name"
+            wget -q -O /tmp/temp.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/temp.apk && echo "✅ Installed $(basename $apk_url)" || echo "❌ Failed $(basename $apk_url)"
           }
-          # Browsers
-          install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk" # Termux as a utility
-          install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk" # F-Droid
-          install_apk "https://download.mozilla.org/?product=fennec-latest&os=android&lang=en-US" # Firefox
-          install_apk "https://github.com/kiwibrowser/src/releases/download/v120.0.6099.144/KiwiBrowser-arm64-v8a-release.apk" # Kiwi Browser
-          # File/APK Managers
-          install_apk "https://www.mt2.cn/download/mt-manager-latest.apk" # MT Manager
-          install_apk "https://github.com/KingManager/NPManager/releases/download/v3.0.0/NPManager_v3.0.0.apk" # NP Manager
-          install_apk "https://www.ghisler.com/android/tcandroid_330.apk" # Total Commander
-          # Network/Interception
-          install_apk "https://github.com/madeye/proxydroid/releases/download/v2.7.0/ProxyDroid_2.7.0.apk" # ProxyDroid
-          install_apk "https://netpatch.cn/download/NetPatch_Pro_v1.0.1.apk" # NetPatch Firewall
-          # Custom User App (Zapero)
+          # Essential Tools
+          install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
+          install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
+          install_apk "https://www.mt2.cn/download/mt-manager-latest.apk"
+          # User's Custom App (Zapero)
           install_apk "https://files.manuscdn.com/user_upload_by_module/session_file/310519663864542854/vOOWCyFUtFfjYxNW.apk"
           
-          # Post-installation checks/fixes
-          adb -s localhost:5555 shell "su -c 'pm grant com.termux android.permission.WRITE_EXTERNAL_STORAGE'" || true
-          adb -s localhost:5555 shell "su -c 'pm grant com.termux android.permission.READ_EXTERNAL_STORAGE'" || true
-          echo "✅ App installation completed"
+          # Deploy Frida
+          FRIDA_VERSION="16.1.3"
+          wget -q -O frida.xz "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz"
+          unxz frida.xz && chmod +x frida && adb -s localhost:5555 push frida /data/local/tmp/frida-server
+          adb -s localhost:5555 shell "su -c 'chmod 755 /data/local/tmp/frida-server && /data/local/tmp/frida-server &'" > /dev/null 2>&1
+          echo "✅ Apps and Frida deployed"
 
       - name: Start ws-scrcpy
         run: |
           cd ws-scrcpy
           WS_SCRCPY_CONFIG=$(pwd)/config.yaml npm start > ws-scrcpy.log 2>&1 &
-          sleep 30
+          sleep 20
 
       - name: Start nport Tunnel
         id: tunnel
         run: |
           nport 8000 --language en > tunnel.log 2>&1 &
-          sleep 30
+          sleep 20
           TUNNEL_URL=$(grep -o 'https://[-a-z0-9.]*.nport.link' tunnel.log | head -n 1)
-          echo "url=${TUNNEL_URL}?fullscreen=true" >> $GITHUB_OUTPUT # Added fullscreen parameter
-          echo "✅ nport tunnel created: ${TUNNEL_URL}?fullscreen=true"
+          # Provide the direct stream URL for immersive experience
+          echo "url=${TUNNEL_URL}/#!action=stream&udid=localhost%3A5555&player=mse&ws=wss%3A%2F%2F$(echo $TUNNEL_URL | sed 's/https:\/\///')%2F%3Faction%3Dproxy-adb%26remote%3Dtcp%253A8886%26udid%3Dlocalhost%253A5555" >> $GITHUB_OUTPUT
+          echo "✅ nport tunnel created"
 
-      - name: Print Access Information
+      - name: Final Access Info
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v9.0 (ULTIMATE)               ║"
+          echo "║          CLOUD ANDROID PHONE v9.1 (IMMERSIVE)              ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║  URL: ${{ steps.tunnel.outputs.url }}                     ║"
-          echo "║  Status: Immersive HD, Root, Frida, Massive Apps            ║"
+          echo "║  ACCESS URL: ${{ steps.tunnel.outputs.url }}               ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
-          find . -name "*.log" -exec cp {} . \; || true
-
-      - name: Upload Debug Logs & URL
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-logs-and-url
-          path: |
-            access_url.txt
-            *.log
-            ws-scrcpy/ws-scrcpy.log
-          retention-days: 1
 
       - name: Keep Session Alive
         run: |
-          echo "Session started for ${{ github.event.inputs.session_hours }} hours"
-          END_TIME=$(( $(date +%s) + ${{ github.event.inputs.session_hours }} * 3600 ))
+          END_TIME=$(( $(date +%s) + 6 * 3600 ))
           while [ $(date +%s) -lt $END_TIME ]; do
-            echo "Session active... $(date)"
+            adb connect localhost:5555 > /dev/null 2>&1 || true
             sleep 300
           done

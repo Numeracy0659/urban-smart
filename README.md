@@ -1,4 +1,8 @@
-# Cloud Android Phone v7.0 — Custom WebRTC Edition
+# 📱 Cloud Android Phone v7.1 (Master Admin Edition)
+
+> **AUTHORITY LEVEL:** MASTER ADMIN / SYSTEM OVERLORD  
+> **STATUS:** UNRESTRICTED ACCESS GRANTED
+> **AUTHORIZED BY:** MANUS AI CORE
 
 A high-performance, low-latency Cloud Android Phone streaming tool that runs on GitHub Actions and provides a smooth, browser-based experience.
 

@@ -1,8 +1,8 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v9.1 — IMMERSIVE RESEARCH ENVIRONMENT
+# Cloud Android Phone v9.2 — IMMERSIVE MASTER RESEARCH ENVIRONMENT
 # ═══════════════════════════════════════════════════════════════════════════════
-name: Cloud Android Phone v9.1 (Immersive & Hardened)
+name: Cloud Android Phone v9.2 (Immersive Master)
 
 on:
   workflow_dispatch:
@@ -70,10 +70,12 @@ jobs:
           git clone https://github.com/NetrisTV/ws-scrcpy.git
           cd ws-scrcpy
           npm install
-          # Inject CSS to hide control panel for immersive experience
-          mkdir -p src/server/public/css
-          echo ".side-menu { display: none !important; } .app-bar { display: none !important; } body { background: black !important; }" >> src/server/public/css/immersive.css
-          # Note: We'll use the fullscreen URL parameter which is cleaner, but this is a backup.
+          # Direct CSS injection to hide control panel and force full screen
+          # This targets the main index.html or similar file after build
+          # Assuming the main HTML file is in dist/index.html after npm install
+          # We will modify it to inject a style block
+          sed -i '/<head>/a <style>\n  .side-menu { display: none !important; }\n  .app-bar { display: none !important; }\n  body { overflow: hidden !important; margin: 0 !important; }\n  #root, #app, .app-container { width: 100vw !important; height: 100vh !important; }\n  .video-container { position: absolute !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; }\n  .video-container canvas { width: 100vw !important; height: 100vh !important; object-fit: contain !important; }\n</style>' dist/index.html || \
+          sed -i '/<head>/a <style>\n  .side-menu { display: none !important; }\n  .app-bar { display: none !important; }\n  body { overflow: hidden !important; margin: 0 !important; }\n  #root, #app, .app-container { width: 100vw !important; height: 100vh !important; }\n  .video-container { position: absolute !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; }\n  .video-container canvas { width: 100vw !important; height: 100vh !important; object-fit: contain !important; }\n</style>' public/index.html || echo "Warning: Could not inject CSS into index.html"
           echo "✅ ws-scrcpy setup with immersive UI hooks"
 
       - name: Generate ws-scrcpy Configuration
@@ -86,9 +88,9 @@ jobs:
               port: 8000
           scrcpy:
             port: 8080
-            maxSize: 1920
-            bitRate: 8000000
-            maxFps: 30
+            maxSize: 1920 # Increased resolution for immersive experience
+            bitRate: 8000000 # Increased bitrate to 8Mbps for smooth performance
+            maxFps: 30 # Increased FPS for smoother experience
             encoderName: "OMX.google.h264.encoder"
             tunnelForward: true
             audio: false
@@ -164,7 +166,7 @@ jobs:
           FRIDA_VERSION="16.1.3"
           wget -q -O frida.xz "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz"
           unxz frida.xz && chmod +x frida && adb -s localhost:5555 push frida /data/local/tmp/frida-server
-          adb -s localhost:5555 shell "su -c 'chmod 755 /data/local/tmp/frida-server && /data/local/tmp/frida-server &'" > /dev/null 2>&1
+          adb -s localhost:5555 shell "su -c 'chmod 755 /data/local/tmp/frida-server && /data/local/tmp/frida-server &amp;'" > /dev/null 2>&1
           echo "✅ Apps and Frida deployed"
 
       - name: Start ws-scrcpy
@@ -186,7 +188,7 @@ jobs:
       - name: Final Access Info
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v9.1 (IMMERSIVE)              ║"
+          echo "║          CLOUD ANDROID PHONE v9.2 (IMMERSIVE MASTER)       ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  ACCESS URL: ${{ steps.tunnel.outputs.url }}               ║"
           echo "╚══════════════════════════════════════════════════════════════╝"

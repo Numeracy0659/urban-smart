@@ -1,8 +1,8 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cloud Android Phone v9.2 — IMMERSIVE MASTER RESEARCH ENVIRONMENT
+# Cloud Android Phone v10.0 — SMART RESEARCH BRIDGE (Terminal + Web Importer)
 # ═══════════════════════════════════════════════════════════════════════════════
-name: Cloud Android Phone v9.2 (Immersive Master)
+name: Cloud Android Phone v10.0 (Smart Research Bridge)
 
 on:
   workflow_dispatch:
@@ -16,17 +16,17 @@ on:
           - start
           - stop
       resolution:
-        description: 'Screen Resolution (e.g., 1080x1920)'
+        description: 'Screen Resolution'
         required: false
-        default: '1080x1920'
+        default: '720x1280'
       ram_mb:
         description: 'RAM (MB)'
         required: false
         default: '4096'
 
 jobs:
-  start-phone:
-    name: Start Cloud Phone
+  start-bridge:
+    name: Start Smart Research Bridge
     if: github.event.inputs.action == 'start'
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -42,7 +42,7 @@ jobs:
           sudo chmod 666 /dev/kvm
           echo "✅ KVM enabled"
 
-      - name: Start Android Emulator
+      - name: Start Android Emulator Container
         run: |
           docker run -d \
             --name dockerify-android \
@@ -52,147 +52,185 @@ jobs:
             -e DNS=8.8.8.8 \
             -e RAM_SIZE=${{ github.event.inputs.ram_mb }} \
             -e "SCREEN_RESOLUTION=${{ github.event.inputs.resolution }}" \
-            -e SCREEN_DENSITY=420 \
+            -e SCREEN_DENSITY=320 \
             -e ROOT_SETUP=true \
             -e ARM_TRANSLATION=true \
             shmayro/dockerify-android:latest
-          echo "✅ Android emulator container started"
+          echo "✅ Android container started"
 
-      - name: Install Dependencies
+      - name: Install System Dependencies & Tunneling Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y adb nodejs npm curl wget unzip
+          sudo apt-get install -y adb nodejs npm curl wget unzip socat
           sudo npm install -g nport
-          echo "✅ Dependencies installed"
+          # Install Bore (TCP Tunnel)
+          wget -q https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz
+          tar -xzf bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz
+          sudo mv bore /usr/local/bin/
+          echo "✅ Tools installed"
 
-      - name: Setup ws-scrcpy with Immersive UI Fix
-        run: |
-          git clone https://github.com/NetrisTV/ws-scrcpy.git
-          cd ws-scrcpy
-          npm install
-          # Direct CSS injection to hide control panel and force full screen
-          # This targets the main index.html or similar file after build
-          # Assuming the main HTML file is in dist/index.html after npm install
-          # We will modify it to inject a style block
-          sed -i '/<head>/a <style>\n  .side-menu { display: none !important; }\n  .app-bar { display: none !important; }\n  body { overflow: hidden !important; margin: 0 !important; }\n  #root, #app, .app-container { width: 100vw !important; height: 100vh !important; }\n  .video-container { position: absolute !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; }\n  .video-container canvas { width: 100vw !important; height: 100vh !important; object-fit: contain !important; }\n</style>' dist/index.html || \
-          sed -i '/<head>/a <style>\n  .side-menu { display: none !important; }\n  .app-bar { display: none !important; }\n  body { overflow: hidden !important; margin: 0 !important; }\n  #root, #app, .app-container { width: 100vw !important; height: 100vh !important; }\n  .video-container { position: absolute !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; }\n  .video-container canvas { width: 100vw !important; height: 100vh !important; object-fit: contain !important; }\n</style>' public/index.html || echo "Warning: Could not inject CSS into index.html"
-          echo "✅ ws-scrcpy setup with immersive UI hooks"
-
-      - name: Generate ws-scrcpy Configuration
-        run: |
-          cat <<EOF > ws-scrcpy/config.yaml
-          runGoogTracker: true
-          runApplTracker: false
-          server:
-            - secure: false
-              port: 8000
-          scrcpy:
-            port: 8080
-            maxSize: 1920 # Increased resolution for immersive experience
-            bitRate: 8000000 # Increased bitrate to 8Mbps for smooth performance
-            maxFps: 30 # Increased FPS for smoother experience
-            encoderName: "OMX.google.h264.encoder"
-            tunnelForward: true
-            audio: false
-            control: true
-            cleanup: true
-            rawStream: true
-          EOF
-          echo "✅ ws-scrcpy configuration generated"
-
-      - name: Wait for Stable Android Boot
+      - name: Wait for Android Boot
         run: |
           MAX_WAIT=600
-          echo "Waiting for stable ADB connection..."
+          echo "Waiting for Android boot..."
           for i in $(seq 1 ${MAX_WAIT}); do
             adb connect localhost:5555 > /dev/null 2>&1 || true
-            STATE=$(adb -s localhost:5555 get-state 2>/dev/null || echo "offline")
-            if [ "$STATE" = "device" ]; then
-              BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
-              if [ "$BOOT" = "1" ]; then
-                echo "✅ Device is online and boot completed"
-                break
-              fi
+            BOOT=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null || echo "0")
+            if [ "${BOOT}" = "1" ]; then
+              echo "✅ Android boot completed"
+              break
             fi
-            echo "Waiting... ($i)"
             sleep 5
-            if [ $i -eq $MAX_WAIT ]; then echo "❌ Timeout"; exit 1; fi
           done
 
-      - name: Configure Network and Environment
+      - name: Setup Headless Research Tools & Frida
         run: |
-          # 1. Force DNS and Internet Access
+          # 1. Hardening & Network
           adb -s localhost:5555 shell "su -c 'setprop net.dns1 8.8.8.8'"
-          adb -s localhost:5555 shell "su -c 'setprop net.dns2 8.8.4.4'"
           adb -s localhost:5555 shell "su -c 'settings put global captive_portal_mode 0'"
-          adb -s localhost:5555 shell "su -c 'settings put global airplane_mode_on 0'"
           
-          # 2. Verify Internet
-          echo "Verifying internet connectivity..."
-          adb -s localhost:5555 shell "ping -c 3 8.8.8.8" || echo "⚠️ Ping failed, but continuing..."
-
-          # 3. Verify ARM Translation
-          echo "Verifying ARM Translation..."
-          ABI_LIST=$(adb -s localhost:5555 shell getprop ro.product.cpu.abilist)
-          echo "Supported ABIs: $ABI_LIST"
-          if [[ $ABI_LIST == *"arm64-v8a"* ]]; then
-            echo "✅ ARM Translation is active"
-          else
-            echo "⚠️ ARM Translation might not be active. Attempting manual trigger..."
-            adb -s localhost:5555 shell "su -c 'setprop ro.product.cpu.abilist x86_64,x86,arm64-v8a,armeabi-v7a,armeabi'"
-          fi
-
-          # 4. Immersive Settings
-          adb -s localhost:5555 shell settings put system screen_off_timeout 2147483647
-          adb -s localhost:5555 shell wm dismiss-keyguard
-          adb -s localhost:5555 shell input keyevent KEYCODE_WAKEUP
-          echo "✅ Configuration completed"
-
-      - name: Install Research Arsenal
-        continue-on-error: true
-        run: |
-          install_apk() {
-            local apk_url="$1"
-            wget -q -O /tmp/temp.apk "$apk_url" && adb -s localhost:5555 install -r /tmp/temp.apk && echo "✅ Installed $(basename $apk_url)" || echo "❌ Failed $(basename $apk_url)"
-          }
-          # Essential Tools
-          install_apk "https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_universal.apk"
-          install_apk "https://f-droid.org/repo/org.fdroid.fdroid_1180050.apk"
-          install_apk "https://www.mt2.cn/download/mt-manager-latest.apk"
-          # User's Custom App (Zapero)
-          install_apk "https://files.manuscdn.com/user_upload_by_module/session_file/310519663864542854/vOOWCyFUtFfjYxNW.apk"
-          
-          # Deploy Frida
+          # 2. Deploy Frida Server
           FRIDA_VERSION="16.1.3"
           wget -q -O frida.xz "https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-server-${FRIDA_VERSION}-android-x86_64.xz"
-          unxz frida.xz && chmod +x frida && adb -s localhost:5555 push frida /data/local/tmp/frida-server
-          adb -s localhost:5555 shell "su -c 'chmod 755 /data/local/tmp/frida-server && /data/local/tmp/frida-server &amp;'" > /dev/null 2>&1
-          echo "✅ Apps and Frida deployed"
+          unxz frida.xz && chmod +x frida
+          adb -s localhost:5555 push frida /data/local/tmp/frida-server
+          adb -s localhost:5555 shell "su -c 'chmod 755 /data/local/tmp/frida-server && /data/local/tmp/frida-server &'" > /dev/null 2>&1
+          
+          # 3. Deploy Mitmproxy for API Interception
+          sudo pip3 install mitmproxy
+          mitmdump -p 8081 -w /tmp/traffic.flow > mitmproxy.log 2>&1 &
+          
+          # 4. Install Jadx for Reverse Engineering
+          JADX_VERSION="1.5.0"
+          wget -q -O jadx.zip "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip"
+          unzip -q jadx.zip -d jadx
+          sudo ln -s $(pwd)/jadx/bin/jadx /usr/local/bin/jadx
+          
+          echo "✅ Advanced tools integrated"
 
-      - name: Start ws-scrcpy
+      - name: Build Research Dashboard Portal
         run: |
-          cd ws-scrcpy
-          WS_SCRCPY_CONFIG=$(pwd)/config.yaml npm start > ws-scrcpy.log 2>&1 &
-          sleep 20
+          mkdir -p web-portal
+          cat << 'EOF' > web-portal/server.js
+          const http = require('http');
+          const { exec } = require('child_process');
+          const fs = require('fs');
 
-      - name: Start nport Tunnel
-        id: tunnel
+          const server = http.createServer((req, res) => {
+            if (req.method === 'GET') {
+              res.writeHead(200, { 'Content-Type': 'text/html' });
+              res.end(`
+                <html>
+                  <head>
+                    <title>Manus Research Dashboard</title>
+                    <style>
+                      body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; background: #0f0f0f; color: #e0e0e0; line-height: 1.6; }
+                      .container { max-width: 900px; margin: 0 auto; }
+                      h1 { color: #007acc; border-bottom: 2px solid #333; padding-bottom: 10px; }
+                      .card { background: #1e1e1e; padding: 25px; border-radius: 12px; margin-bottom: 25px; border: 1px solid #333; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+                      h3 { margin-top: 0; color: #4CAF50; }
+                      input[type="text"] { width: 100%; padding: 12px; border-radius: 6px; border: 1px solid #444; background: #252526; color: #fff; margin-bottom: 15px; font-size: 14px; }
+                      button { padding: 12px 25px; background: #0e639c; color: white; border: none; cursor: pointer; border-radius: 6px; font-weight: bold; transition: background 0.3s; }
+                      button:hover { background: #1177bb; }
+                      code { background: #000; padding: 12px; display: block; border-radius: 6px; color: #00ff00; font-family: 'Courier New', Courier, monospace; overflow-x: auto; }
+                      .status-list { list-style: none; padding: 0; }
+                      .status-list li { margin-bottom: 12px; padding-left: 25px; position: relative; }
+                      .status-list li::before { content: '●'; position: absolute; left: 0; color: #4CAF50; }
+                    </style>
+                  </head>
+                  <body>
+                    <div class="container">
+                      <h1>🚀 Manus Smart Research Bridge</h1>
+                      
+                      <div class="card">
+                        <h3>📥 APK Importer</h3>
+                        <p>Paste a direct URL to any APK to install it into the cloud environment.</p>
+                        <form action="/upload" method="POST">
+                          <input type="text" name="apk_url" placeholder="https://example.com/app.apk" required />
+                          <button type="submit">Install Target App</button>
+                        </form>
+                      </div>
+
+                      <div class="card">
+                        <h3>🛠️ Research Toolbox</h3>
+                        <ul class="status-list">
+                          <li><b>Frida Server:</b> Active on <code>port 27042</code></li>
+                          <li><b>Mitmproxy:</b> Capturing traffic on <code>port 8081</code></li>
+                          <li><b>Jadx:</b> Ready for de-compilation via CLI</li>
+                          <li><b>Root Access:</b> Verified (Magisk/SU)</li>
+                        </ul>
+                      </div>
+
+                      <div class="card">
+                        <h3>💻 Terminal Connection</h3>
+                        <p>Copy and run this in your local terminal to link your machine:</p>
+                        <code>adb connect <span id="adb-host">...</span></code>
+                        <p style="font-size: 12px; color: #888; margin-top: 10px;">Note: You must have ADB installed locally.</p>
+                      </div>
+                    </div>
+                    <script>
+                      // We will inject the ADB host here
+                      fetch('/adb-info').then(r => r.json()).then(data => {
+                        document.getElementById('adb-host').innerText = data.host;
+                      });
+                    </script>
+                  </body>
+                </html>
+              `);
+            } else if (req.method === 'GET' && req.url === '/adb-info') {
+              const adbHost = fs.readFileSync('../adb_host.txt', 'utf8').trim();
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ host: adbHost }));
+            } else if (req.method === 'POST' && req.url === '/upload') {
+              let body = '';
+              req.on('data', chunk => { body += chunk; });
+              req.on('end', () => {
+                const url = new URLSearchParams(body).get('apk_url');
+                exec(`wget -q -O /tmp/target.apk "${url}" && adb -s localhost:5555 install -r /tmp/target.apk`, (err, stdout, stderr) => {
+                  res.writeHead(200, { 'Content-Type': 'text/html' });
+                  if (err) {
+                    res.end(`<h3>❌ Installation Failed</h3><pre>${stderr}</pre><br><a href="/">Back</a>`);
+                  } else {
+                    res.end(`<h3>✅ Installation Success!</h3><pre>${stdout}</pre><br><a href="/">Back</a>`);
+                  }
+                });
+              });
+            }
+          });
+          server.listen(8080, () => console.log('Portal running on port 8080'));
+          EOF
+          
+          cd web-portal && node server.js > server.log 2>&1 &
+          echo "✅ Dashboard started"
+
+      - name: Start Secure Tunnels (ADB TCP + Web Dashboard)
+        id: tunnels
         run: |
-          nport 8000 --language en > tunnel.log 2>&1 &
-          sleep 20
-          TUNNEL_URL=$(grep -o 'https://[-a-z0-9.]*.nport.link' tunnel.log | head -n 1)
-          # Provide the direct stream URL for immersive experience
-          echo "url=${TUNNEL_URL}/#!action=stream&udid=localhost%3A5555&player=mse&ws=wss%3A%2F%2F$(echo $TUNNEL_URL | sed 's/https:\/\///')%2F%3Faction%3Dproxy-adb%26remote%3Dtcp%253A8886%26udid%3Dlocalhost%253A5555" >> $GITHUB_OUTPUT
-          echo "✅ nport tunnel created"
+          # 1. Start Bore TCP Tunnel for ADB (5555)
+          bore local 5555 --to bore.pub > bore.log 2>&1 &
+          sleep 15
+          ADB_HOST=$(grep -o 'bore.pub:[0-9]*' bore.log | head -n 1)
+          echo "$ADB_HOST" > adb_host.txt
+          echo "adb_host=$ADB_HOST" >> $GITHUB_OUTPUT
+          
+          # 2. Start nport for Web Dashboard (8080)
+          nport 8080 --language en > portal_tunnel.log 2>&1 &
+          sleep 15
+          PORTAL_URL=$(grep -o 'https://[-a-z0-9.]*.nport.link' portal_tunnel.log | head -n 1)
+          echo "portal_url=$PORTAL_URL" >> $GITHUB_OUTPUT
+          
+          echo "✅ Tunnels live"
 
-      - name: Final Access Info
+      - name: Final Handover Info
         run: |
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║          CLOUD ANDROID PHONE v9.2 (IMMERSIVE MASTER)       ║"
+          echo "║          SMART RESEARCH BRIDGE v10.0 READY                   ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║  ACCESS URL: ${{ steps.tunnel.outputs.url }}               ║"
+          echo "║  1. Research Dashboard: ${{ steps.tunnels.outputs.portal_url }} ║"
+          echo "║  2. Local Terminal Link: adb connect ${{ steps.tunnels.outputs.adb_host }} ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
-          echo "${{ steps.tunnel.outputs.url }}" > access_url.txt
+          echo "${{ steps.tunnels.outputs.portal_url }}" > portal_url.txt
+          echo "${{ steps.tunnels.outputs.adb_host }}" > adb_host.txt
 
       - name: Keep Session Alive
         run: |

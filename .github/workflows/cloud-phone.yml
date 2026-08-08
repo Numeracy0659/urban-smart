@@ -61,8 +61,8 @@ jobs:
           tar -xzf bore-v0.5.1-x86_64-unknown-linux-musl.tar.gz
           sudo mv bore /usr/local/bin/
           
-          # Install Mitmproxy & Frida Tools
-          sudo pip3 install mitmproxy frida-tools objection
+          # Install Mitmproxy & Frida Tools (using --break-system-packages for Ubuntu 24.04 compatibility)
+          sudo pip3 install mitmproxy frida-tools objection --break-system-packages
           
           # Install Jadx for Static Analysis
           JADX_VERSION="1.5.0"

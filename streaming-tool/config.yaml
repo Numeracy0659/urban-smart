@@ -1,0 +1,16 @@
+runGoogTracker: true
+runApplTracker: false
+server:
+  - secure: false
+    port: 8000
+scrcpy:
+  port: 8080
+  maxSize: 720
+  bitRate: 1000000 # 1 Mbps
+  maxFps: 20
+  encoderName: "OMX.google.h264.encoder" # Force software encoder
+  tunnelForward: true
+  audio: false
+  control: true
+  cleanup: true
+  rawStream: true
